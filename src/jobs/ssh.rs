@@ -207,11 +207,12 @@ fn discarded_known_hosts() -> std::path::PathBuf {
 #[cfg(unix)]
 fn control_path(target: &SshTarget) -> PathBuf {
     // A 16-hex hash leaves room for ssh's temporary bind suffix. It folds in
-    // the extra opts so different ports never share a control socket.
+    // endpoint options (e.g. port) so different ports never share a control
+    // socket, but excludes ControlPersist so connect and background jobs share it.
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
     target.dest.hash(&mut h);
-    target.extra_opts.hash(&mut h);
+    extra_opts_without_persist(target).hash(&mut h);
     control_dir().join(format!("{:016x}", h.finish()))
 }
 
@@ -338,12 +339,25 @@ pub(crate) fn interactive_args(target: &SshTarget) -> Result<Vec<String>> {
     #[cfg(unix)]
     {
         let path = control_path(target);
-        // If a stale socket file or dangling symlink exists at the control path,
-        // OpenSSH prints "ControlSocket ... already exists, disabling multiplexing"
-        // and falls back to a non-multiplexed session without priming the master.
-        // Remove any non-functional socket before starting the interactive login.
+        // If a stale socket file exists at the control path, OpenSSH prints
+        // "ControlSocket ... already exists, disabling multiplexing" and falls
+        // back to a non-multiplexed session. Only remove the socket if the master
+        // is unresponsive.
         if path.symlink_metadata().is_ok() {
-            let _ = std::fs::remove_file(&path);
+            let is_alive = std::process::Command::new("ssh")
+                .args(["-O", "check", "-S"])
+                .arg(&path)
+                .arg("--")
+                .arg(&target.dest)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false);
+            if !is_alive {
+                let _ = std::fs::remove_file(&path);
+            }
         }
     }
     let mut args = ssh_opts(target, false);
@@ -1112,5 +1126,16 @@ mod tests {
 
         let _ = interactive_args(&target).unwrap();
         assert!(path.symlink_metadata().is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn persist_does_not_change_the_control_path() {
+        let plain = SshTarget::alias("cluster");
+        let mut custom = SshTarget::alias("cluster");
+        custom
+            .extra_opts
+            .extend(["-o".into(), "ControlPersist=7d".into()]);
+        assert_eq!(control_path(&plain), control_path(&custom));
     }
 }

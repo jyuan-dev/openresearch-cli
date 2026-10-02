@@ -635,10 +635,18 @@ async fn watch_ssh_job(
 
         let observed = ssh::inspect_job(&target, &dir, container.as_ref()).await;
         let error = match &observed {
-            Err(err) => Some(format!(
-                "Monitoring unavailable: {err}. Reconnect with orx compute connect ssh --host {}. The job has not been declared stopped.",
-                ssh::sh_quote(&target.dest)
-            )),
+            Err(err) => {
+                let reconnect_hint = match descriptor.as_ref().map(|d| d.kind.as_str()) {
+                    Some("openresearch_job") => {
+                        " The box may be unreachable or terminated. The job has not been declared stopped.".to_string()
+                    }
+                    _ => format!(
+                        " Reconnect with orx compute connect ssh --host {}. The job has not been declared stopped.",
+                        ssh::sh_quote(&target.dest)
+                    ),
+                };
+                Some(format!("Monitoring unavailable: {err}.{reconnect_hint}"))
+            }
             _ => None,
         };
         match (&error, &last_error) {
