@@ -9,6 +9,7 @@
 //! `~/.local/share/openresearch`.
 
 mod acp;
+pub(crate) mod board;
 mod costs;
 mod env;
 pub(crate) mod search;
@@ -1531,6 +1532,7 @@ impl Store {
             tx.commit()?;
         }
         search::initialize(&conn)?;
+        board::initialize(&conn)?;
         // Older builds of this branch created a one-root-per-project unique
         // index; multiple baselines are allowed, so make sure it's gone.
         let _ = conn.execute(

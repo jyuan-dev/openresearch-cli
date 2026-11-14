@@ -10,6 +10,7 @@
 //! `main().catch(err => { console.error(err.message); process.exit(1) })`.
 
 mod alphaxiv;
+mod board;
 mod browser;
 mod editors;
 // DTOs faithfully mirror every API wire field; not all are read by the CLI yet.
@@ -115,6 +116,14 @@ enum Command {
     /// List the agents, accounts and model providers OpenResearch offers, name them, pin logos,
     /// and add OpenAI-compatible endpoints. Runs from an OpenResearch chat.
     Agents(AgentsArgs),
+    /// The research board: open decisions, and a project's epics and tickets.
+    Board(commands::board::BoardArgs),
+
+    /// Research questions on the board and their answer criteria.
+    Epic(commands::board::EpicArgs),
+
+    /// Propose, decide, report on and comment on board tickets.
+    Ticket(commands::board::TicketArgs),
 
     /// Print CLI usage for agents, or fetch a skill doc.
     Skill(SkillArgs),
@@ -1493,6 +1502,9 @@ fn command_name(command: &Command) -> &'static str {
         Command::SshKey(_) => "ssh-key",
         Command::Exp(_) => "exp",
         Command::Agents(_) => "agents",
+        Command::Board(_) => "board",
+        Command::Epic(_) => "epic",
+        Command::Ticket(_) => "ticket",
         Command::Skill(_) => "skill",
         Command::Skills(_) => "skills",
         Command::Templates(_) => "templates",
@@ -1550,6 +1562,9 @@ async fn dispatch(command: Command) -> error::Result<()> {
         },
         Command::Exp(args) => commands::exp::run(args).await,
         Command::Agents(args) => commands::agents::run(args).await,
+        Command::Board(args) => commands::board::board(args),
+        Command::Epic(args) => commands::board::epic(args),
+        Command::Ticket(args) => commands::board::ticket(args),
         Command::Skill(args) => commands::skill::run(args).await,
         Command::Skills(args) => commands::library::skills(args),
         Command::Templates(args) => commands::library::templates(args),

@@ -18,6 +18,7 @@
 pub mod agents;
 pub mod alphaxiv_mcp;
 pub mod app;
+pub mod board;
 pub mod compute;
 pub mod create_experiment;
 pub mod delete;
