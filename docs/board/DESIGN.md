@@ -491,3 +491,29 @@ bundled skill 需要新增 `orx-board` 模块，并修改 `orx-experiment-tree`�
 - 判断依据是“这一轮由谁发起”。如果你在一轮里要求 X，agent 在同一轮里顺手又建了 Y，Y 也会被算进这张 ticket。
 - unplanned ticket 没有 Epic，不进调度队列，也不参与 Epic 预算；结束后需要你在看板上接受或取消。
 - 闸门依赖 `ORX_CHAT_SESSION_ID` 等环境变量，属于“防误操作”，防不住刻意绕过的本机进程。
+
+## 21. 切片 ⑤ 实现记录（历史导入）
+
+纯规则在 `src/board/import.rs`，store 方法是 `propose_import` 和 `apply_import`。
+
+- **只起草，不写入**：`orx board import <projectId>`，或看板“本项目”页上的“起草导入”，只会打开或更新一张 `import` 卡。项目里有多少个还没有 ticket 的实验，页面上会直接提示。重复执行会覆盖这张卡上的草稿，不会再多出一张卡。
+- **自动分组**，按以下顺序：
+  1. 标题里含 “Baseline Reproduction” → “Baseline reproduction”；
+  2. 前缀标签（最多 4 个字母 + 数字 + 可选的变体字母和 `-x`）→ 按标签分组，例如 `E1a`、`E1c` 归到 `E1`，`E2e-b` 归到 `E2`，`RP1`、`P6-fast` 同理。单个节点也单独成组。
+  3. 至少 3 个节点共用同一个开头单词 → 成为一组，但跳过 does、is、what 这类非主题词；
+  4. 其余归到 “Unsorted”。
+- **分组文件**：`--groups <file>` 可以替代自动分组，可以由你或你让 agent 来写。格式是 `[{"title": "...", "experimentIds": ["<id 或 id 前缀>"]}]`，文件里没有列出的实验归到 Unsorted。`orx board decide <id> --option import --groups <file>` 也接受同样格式的文件。
+- **在卡上校对**：可以重命名分组，可以把单个实验移到别的分组（下拉框），也可以把两个分组改成同名来合并。点“导入”之前不写入任何内容；选“放弃”也不写入。只有你能确认。
+- **确认后**，在一个事务里写入：
+  - 每组一个 `answered` Epic，question 先填组名，之后可以改；
+  - 每个节点一张 ticket，挂到原节点 `experiment_id`，`base_experiment_id` 设为父节点，`conclusion` 用节点描述，`created_at` 用节点的创建时间；
+  - 状态：有 run 以 done 结束 → done；已归档或从未成功跑完 → cancelled。
+  - 已经被其他 ticket 占用的节点会让整次导入失败并提示重新起草，不会只导入一半。
+- **看板页**：已回答或已放弃的研究问题下的 ticket 不在状态列里显示，只显示一行计数（“已回答研究问题中的 ticket：N”）。研究问题列表里标“已回答”。
+- **在你真实数据的副本上验证**（真实库没有动）：
+  - Slot-JEPA 起草为 14 组，与 E 编号一一对应，只有 1 个节点进了 Unsorted。确认后得到 35 张 done、4 张 cancelled。
+  - INTACT-JEPA 的标题是自由文本，自动分组只能得到 44 组、115 个 Unsorted，**需要用分组文件**。
+
+**已知缺口**
+- 导入后的 Epic 没有回答标准，`orx epic show` 会提示“去提议”，对已回答的 Epic 来说是多余的。
+- 导入的 Epic 没有“重新打开”，要在同一方向继续做，需要新建 Epic。

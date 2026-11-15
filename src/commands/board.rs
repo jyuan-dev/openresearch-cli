@@ -62,6 +62,17 @@ pub enum BoardCommand {
         /// The new value, as JSON. Omit to show the current one.
         value: Option<String>,
     },
+    /// Draft epics for a project's existing experiments and put them on an
+    /// import card. Nothing is written until the card is confirmed; running it
+    /// again replaces the open card's draft.
+    Import {
+        project_id: String,
+        /// A grouping to use instead of the draft: a JSON list of
+        /// `{"title": "...", "experimentIds": ["<id or id prefix>", ...]}`.
+        /// Experiments it leaves out go to an "Unsorted" group.
+        #[arg(long, value_name = "FILE")]
+        groups: Option<std::path::PathBuf>,
+    },
     /// Answer a decision card from `orx board`.
     Decide {
         decision_id: String,
@@ -74,6 +85,9 @@ pub enum BoardCommand {
         /// A free-text answer or note.
         #[arg(long)]
         text: Option<String>,
+        /// On an import card: the grouping to import, in the `board import --groups` format.
+        #[arg(long, value_name = "FILE")]
+        groups: Option<std::path::PathBuf>,
     },
 }
 
@@ -423,11 +437,44 @@ pub fn board(args: BoardArgs) -> Result<()> {
             println!("{}", store.board_setting(key.stored())?);
             Ok(())
         }
+        Some(BoardCommand::Import { project_id, groups }) => {
+            let groups = groups.as_deref().map(read_groups).transpose()?;
+            let decision = Store::open()?.propose_import(&project_id, groups, &actor)?;
+            if args.json {
+                return print_json(&decision);
+            }
+            let groups = decision.payload["groups"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default();
+            let count: usize = groups
+                .iter()
+                .map(|group| group["experimentIds"].as_array().map_or(0, Vec::len))
+                .sum();
+            println!(
+                "Import card {} drafts {} epics for {count} experiments:",
+                decision.id,
+                groups.len()
+            );
+            for group in &groups {
+                println!(
+                    "  {:>4}  {}",
+                    group["experimentIds"].as_array().map_or(0, Vec::len),
+                    group["title"].as_str().unwrap_or("")
+                );
+            }
+            println!(
+                "Check the grouping on the research board, or confirm it with `orx board decide {} --option import`.",
+                decision.id
+            );
+            Ok(())
+        }
         Some(BoardCommand::Decide {
             decision_id,
             select,
             option,
             text,
+            groups,
         }) => {
             let decision = Store::open()?.resolve_decision(
                 &decision_id,
@@ -435,6 +482,7 @@ pub fn board(args: BoardArgs) -> Result<()> {
                     selected: (!select.is_empty()).then_some(select),
                     option,
                     text,
+                    groups: groups.as_deref().map(read_groups).transpose()?,
                 },
                 &actor,
             )?;
@@ -445,6 +493,17 @@ pub fn board(args: BoardArgs) -> Result<()> {
             Ok(())
         }
     }
+}
+
+fn read_groups(path: &std::path::Path) -> Result<Vec<crate::board::import::Group>> {
+    let text =
+        std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    serde_json::from_str(&text).with_context(|| {
+        format!(
+            "{} is not a list of {{\"title\": ..., \"experimentIds\": [...]}} groups",
+            path.display()
+        )
+    })
 }
 
 fn inbox(json: bool) -> Result<()> {
@@ -474,6 +533,10 @@ fn inbox(json: bool) -> Result<()> {
                 crate::board::DecisionKind::ApproveCriteria => {
                     format!("criteria v{}", decision.payload["version"])
                 }
+                crate::board::DecisionKind::Import => format!(
+                    "import: {} epics (--option import|discard)",
+                    decision.payload["groups"].as_array().map_or(0, Vec::len)
+                ),
                 crate::board::DecisionKind::PublishGate => format!(
                     "publish: {} (--option allow|deny)",
                     decision.payload["what"].as_str().unwrap_or("")

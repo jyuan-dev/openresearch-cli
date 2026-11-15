@@ -4,7 +4,7 @@ import { act } from "react";
 import { m } from "../src/paraglide/messages.js";
 import { createElement } from "react";
 import { BoardView } from "../src/board/BoardView.tsx";
-import { find, render, serve, settle } from "./render.mjs";
+import { find, render, serve, settle, type } from "./render.mjs";
 
 const project = { id: "p", name: "Slot JEPA" };
 const ticket = (id, key, title, extra = {}) => ({
@@ -144,4 +144,37 @@ test("a ticket the user asked for in chat is marked as such", async () => {
     running: [{ ...ticket("t1", "SJ-004", "lr 1e-3", { status: "running", sessionId: "chat-1", startedAt: Date.now(), proposedBy: "user-chat" }), projectName: project.name }],
   });
   assert.ok(document.body.textContent.includes(m.board_unplanned()));
+});
+
+test("an import card sends the grouping as the user settled it", async () => {
+  const nodes = {
+    a: { title: "E1a robot role head", status: "done", archived: false },
+    b: { title: "E1b robot role head", status: "done", archived: false },
+    c: { title: "Slot swap diagnostic", status: "cancelled", archived: false },
+  };
+  const groups = [{ title: "E1: robot role head", experimentIds: ["a", "b"] }, { title: "Unsorted", experimentIds: ["c"] }];
+  const { writes } = await openBoard({ decisions: [card({ id: "d1", kind: "import", epicId: null, payload: { groups, nodes } }, [])] });
+  assert.ok(document.body.textContent.includes(m.board_card_import_title({ count: "3" })));
+  const names = document.querySelectorAll(`input[aria-label="${m.board_import_group_title_label()}"]`);
+  await type(names[0], "Robot role");
+  // Opening the unsorted group shows its node; moving it into the first group empties the second.
+  await click(find("button", m.board_import_group_count({ count: "1" })));
+  assert.ok(document.body.textContent.includes("Slot swap diagnostic"));
+  const target = document.querySelector(`select[aria-label="${m.board_import_move_label()}"]`);
+  const { set } = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value");
+  await act(async () => {
+    set.call(target, "0");
+    target.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  await click(find("button", m.board_import_confirm({ count: "1" })));
+  assert.deepEqual(writes, [{ path: "/api/board/decisions/d1/resolve", body: { option: "import", groups: [{ title: "Robot role", experimentIds: ["a", "b", "c"] }] } }]);
+});
+
+test("giving two groups the same name merges them on import", async () => {
+  const nodes = { a: { title: "A", status: "done", archived: false }, b: { title: "B", status: "done", archived: false } };
+  const groups = [{ title: "One", experimentIds: ["a"] }, { title: "Two", experimentIds: ["b"] }];
+  const { writes } = await openBoard({ decisions: [card({ id: "d1", kind: "import", epicId: null, payload: { groups, nodes } }, [])] });
+  await type(document.querySelectorAll(`input[aria-label="${m.board_import_group_title_label()}"]`)[1], "One ");
+  await click(find("button", m.board_import_confirm({ count: "1" })));
+  assert.deepEqual(writes[0].body.groups, [{ title: "One", experimentIds: ["a", "b"] }]);
 });

@@ -9,6 +9,7 @@ use serde_json::{json, Value};
 use super::{now_ms, Store};
 use crate::board::checks::{self, Checks};
 use crate::board::gate;
+use crate::board::import;
 use crate::board::scheduler::{self, Candidate, MachineSlots};
 use crate::board::transitions::{self, TicketAction};
 use crate::board::{
@@ -68,6 +69,8 @@ pub struct DecisionChoice {
     /// The option picked on a question card.
     pub option: Option<String>,
     pub text: Option<String>,
+    /// The grouping the user settled on an import card.
+    pub groups: Option<Vec<import::Group>>,
 }
 
 const TICKET_COLUMNS: &str = "id, project_id, epic_id, key, kind, batch_id, title, hypothesis,
@@ -461,7 +464,8 @@ impl Store {
 
     pub fn list_epics(&self, project_id: &str) -> Result<Vec<Epic>> {
         let mut statement = self.conn.prepare(&format!(
-            "SELECT {EPIC_COLUMNS} FROM board_epics WHERE project_id = ?1 ORDER BY priority, created_at"
+            "SELECT {EPIC_COLUMNS} FROM board_epics WHERE project_id = ?1
+             ORDER BY priority, created_at, CAST(substr(key, instr(key, '-E') + 2) AS INTEGER)"
         ))?;
         let epics = statement
             .query_map([project_id], epic_from_row)?
@@ -1399,6 +1403,13 @@ impl Store {
             }
             // A budget card informs; seeing it is the decision. Topping up is a change to the epic.
             DecisionKind::Budget => {}
+            DecisionKind::Import => match choice.option.as_deref() {
+                Some("import") | None => self.apply_import(&decision, choice)?,
+                Some("discard") => {}
+                Some(other) => {
+                    bail!("An import card is answered with `import` or `discard`, not `{other}`.")
+                }
+            },
             DecisionKind::PublishGate => match choice.option.as_deref() {
                 Some("allow" | "deny") => {}
                 _ => bail!(
@@ -1436,7 +1447,7 @@ impl Store {
             params![
                 decision.id,
                 now_ms(),
-                json!({"selected": choice.selected, "option": choice.option, "text": choice.text})
+                json!({"selected": choice.selected, "option": choice.option, "text": choice.text, "groups": choice.groups})
                     .to_string()
             ],
         )?;
@@ -2096,6 +2107,262 @@ impl Store {
             &gate::launch_target(backend, host),
         )
         .map_err(|why| anyhow!("{why}"))
+    }
+
+    /// How many of the project's experiments no ticket holds.
+    pub fn unticketed_experiments(&self, project_id: &str) -> Result<i64> {
+        Ok(self.conn.query_row(
+            "SELECT COUNT(*) FROM local_experiments e WHERE e.project_id = ?1
+               AND NOT EXISTS(SELECT 1 FROM board_tickets t WHERE t.experiment_id = e.id)",
+            [project_id],
+            |row| row.get(0),
+        )?)
+    }
+
+    /// Drafts epics for the project's experiments that no ticket holds yet and
+    /// puts them on one import card; nothing is written until the user confirms
+    /// it. `groups` replaces the drafted grouping (from a file the user or an
+    /// agent wrote); experiments it leaves out go to the unsorted group.
+    pub fn propose_import(
+        &self,
+        project_id: &str,
+        groups: Option<Vec<import::Group>>,
+        actor: &Actor,
+    ) -> Result<Decision> {
+        self.require_board_project(project_id)?;
+        let mut nodes = Vec::new();
+        let mut shown = serde_json::Map::new();
+        for experiment in self.list_experiments_by_project(project_id)? {
+            if self.ticket_for_experiment(&experiment.id)?.is_some() {
+                continue;
+            }
+            let title = experiment
+                .title
+                .clone()
+                .filter(|title| !title.trim().is_empty())
+                .unwrap_or_else(|| experiment.slug.clone());
+            let status = self.imported_status(&experiment)?;
+            shown.insert(
+                experiment.id.clone(),
+                json!({"title": title, "status": status.as_str(), "archived": experiment.archived}),
+            );
+            nodes.push(import::Node {
+                id: experiment.id.clone(),
+                title,
+                created_at: experiment.created_at,
+            });
+        }
+        if nodes.is_empty() {
+            bail!("Every experiment in this project is already on the board; there is nothing to import.");
+        }
+        let ids: Vec<String> = nodes.iter().map(|node| node.id.clone()).collect();
+        let groups = match groups {
+            None => import::draft(&nodes),
+            Some(groups) => {
+                let mut resolved = Vec::new();
+                let mut placed = Vec::new();
+                for group in groups {
+                    let mut members = Vec::new();
+                    for wanted in &group.experiment_ids {
+                        let matches: Vec<&String> = ids
+                            .iter()
+                            .filter(|id| id.starts_with(wanted.as_str()))
+                            .collect();
+                        match matches.as_slice() {
+                            [id] if !placed.contains(*id) => {
+                                placed.push((*id).clone());
+                                members.push((*id).clone());
+                            }
+                            [_] => bail!("Experiment {wanted} is in more than one group."),
+                            [] => bail!(
+                                "No experiment `{wanted}` waits to be imported in this project."
+                            ),
+                            _ => bail!(
+                                "`{wanted}` matches more than one experiment; give more of its id."
+                            ),
+                        }
+                    }
+                    resolved.push(import::Group {
+                        title: group.title,
+                        experiment_ids: members,
+                    });
+                }
+                let rest: Vec<String> = ids
+                    .iter()
+                    .filter(|id| !placed.contains(id))
+                    .cloned()
+                    .collect();
+                if !rest.is_empty() {
+                    resolved.push(import::Group {
+                        title: import::UNSORTED.into(),
+                        experiment_ids: rest,
+                    });
+                }
+                import::validate(&resolved, &ids).map_err(|why| anyhow!("{why}"))?
+            }
+        };
+        let payload = json!({"groups": groups, "nodes": shown, "by": actor.stored()});
+        let tx = self.conn.unchecked_transaction()?;
+        let open: Option<String> = tx
+            .query_row(
+                "SELECT id FROM board_decisions WHERE project_id = ?1 AND kind = 'import' AND status = 'open'",
+                [project_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let id = match open {
+            Some(id) => {
+                tx.execute(
+                    "UPDATE board_decisions SET payload_json = ?2 WHERE id = ?1",
+                    params![id, payload.to_string()],
+                )?;
+                id
+            }
+            None => Self::insert_decision(
+                &tx,
+                project_id,
+                None,
+                DecisionKind::Import,
+                &[],
+                &payload,
+                &format!("import:{project_id}:{}", uuid::Uuid::new_v4()),
+            )?,
+        };
+        tx.commit()?;
+        self.require_decision(&id)
+    }
+
+    /// An imported node is done when one of its runs finished; otherwise it was
+    /// never answered and comes in cancelled.
+    fn imported_status(
+        &self,
+        experiment: &crate::local::model::LocalExperiment,
+    ) -> Result<TicketStatus> {
+        if experiment.archived {
+            return Ok(TicketStatus::Cancelled);
+        }
+        let finished = self
+            .list_runs_by_experiment(&experiment.id)?
+            .iter()
+            .any(|run| run.status == "done");
+        Ok(if finished {
+            TicketStatus::Done
+        } else {
+            TicketStatus::Cancelled
+        })
+    }
+
+    /// Writes the confirmed grouping: one answered epic per group, one closed
+    /// ticket per node, all at once.
+    fn apply_import(&self, decision: &Decision, choice: &DecisionChoice) -> Result<()> {
+        let nodes = decision.payload["nodes"]
+            .as_object()
+            .ok_or_else(|| anyhow!("This import card lists no experiments."))?;
+        let ids: Vec<String> = nodes.keys().cloned().collect();
+        let groups = match &choice.groups {
+            Some(groups) => groups.clone(),
+            None => serde_json::from_value(decision.payload["groups"].clone())?,
+        };
+        let groups = import::validate(&groups, &ids).map_err(|why| anyhow!("{why}"))?;
+        let board = self.require_board_project(&decision.project_id)?;
+        let tx = self.conn.unchecked_transaction()?;
+        let now = now_ms();
+        let mut epics = 0;
+        let mut tickets = 0;
+        for group in &groups {
+            let seq: i64 = tx.query_row(
+                "UPDATE board_projects SET next_epic = next_epic + 1 WHERE project_id = ?1 RETURNING next_epic - 1",
+                [&decision.project_id],
+                |row| row.get(0),
+            )?;
+            let epic_id = uuid::Uuid::new_v4().to_string();
+            let epic_key = format!("{}-E{seq}", board.key_prefix);
+            tx.execute(
+                "INSERT INTO board_epics (id, project_id, key, title, question, status, priority,
+                     rules_json, proposed_by, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?4, 'answered', 100, ?5, 'user', ?6, ?6)",
+                params![
+                    epic_id,
+                    decision.project_id,
+                    epic_key,
+                    group.title,
+                    serde_json::to_string(&EpicRules::default())?,
+                    now
+                ],
+            )?;
+            Self::append_board_event(
+                &tx,
+                &decision.project_id,
+                &epic_id,
+                &Actor::User,
+                "imported",
+                &json!({"key": epic_key, "decision": decision.id}),
+            )?;
+            epics += 1;
+            for experiment_id in &group.experiment_ids {
+                let taken: bool = tx.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM board_tickets WHERE experiment_id = ?1)",
+                    [experiment_id],
+                    |row| row.get(0),
+                )?;
+                if taken {
+                    bail!("Experiment {experiment_id} got a ticket after this card was drafted; run the import again.");
+                }
+                let experiment = self.get_local_experiment(experiment_id)?.ok_or_else(|| {
+                    anyhow!("Experiment {experiment_id} no longer exists; run the import again.")
+                })?;
+                let status = self.imported_status(&experiment)?;
+                let seq: i64 = tx.query_row(
+                    "UPDATE board_projects SET next_ticket = next_ticket + 1 WHERE project_id = ?1 RETURNING next_ticket - 1",
+                    [&decision.project_id],
+                    |row| row.get(0),
+                )?;
+                let ticket_id = uuid::Uuid::new_v4().to_string();
+                let key = format!("{}-{seq:03}", board.key_prefix);
+                let title = nodes[experiment_id]["title"]
+                    .as_str()
+                    .unwrap_or(&experiment.slug)
+                    .to_string();
+                tx.execute(
+                    "INSERT INTO board_tickets (id, project_id, epic_id, key, kind, title, status,
+                         base_experiment_id, experiment_id, conclusion, proposed_by, finished_at,
+                         created_at, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, 'experiment', ?5, ?6, ?7, ?8, ?9, 'user', ?10, ?11, ?10)",
+                    params![
+                        ticket_id,
+                        decision.project_id,
+                        epic_id,
+                        key,
+                        title,
+                        status.as_str(),
+                        experiment.parent_experiment_id,
+                        experiment.id,
+                        experiment.description.filter(|text| !text.trim().is_empty()),
+                        now,
+                        experiment.created_at
+                    ],
+                )?;
+                Self::append_board_event(
+                    &tx,
+                    &decision.project_id,
+                    &ticket_id,
+                    &Actor::User,
+                    "imported",
+                    &json!({"key": key, "experimentId": experiment.id, "decision": decision.id}),
+                )?;
+                tickets += 1;
+            }
+        }
+        Self::append_board_event(
+            &tx,
+            &decision.project_id,
+            &decision.id,
+            &Actor::User,
+            "import_applied",
+            &json!({"epics": epics, "tickets": tickets}),
+        )?;
+        tx.commit()?;
+        Ok(())
     }
 
     /// Lets a confidential project be published only on a one-time permit the
@@ -3168,5 +3435,180 @@ mod tests {
         assert!(store.gate_publish(&id, "share --publish").is_err());
         let open = project(&store, "open");
         store.gate_publish(&open, "share --publish").unwrap();
+    }
+
+    fn titled_experiment(store: &Store, project_id: &str, title: &str, finished: bool) -> String {
+        let id = local_experiment(store, project_id);
+        store
+            .conn
+            .execute(
+                "UPDATE local_experiments SET title = ?2, description = ?3,
+                     created_at = (SELECT COUNT(*) FROM local_experiments) WHERE id = ?1",
+                params![id, title, format!("notes on {title}")],
+            )
+            .unwrap();
+        if finished {
+            store
+                .conn
+                .execute(
+                    "INSERT INTO runs (id, experiment_id, project_id, status, backend_json, created_at, updated_at)
+                     VALUES (?1, ?2, ?3, 'done', '{}', 1, 1)",
+                    params![uuid::Uuid::new_v4().to_string(), id, project_id],
+                )
+                .unwrap();
+        }
+        id
+    }
+
+    #[test]
+    fn an_import_writes_nothing_until_the_user_confirms_the_grouping() {
+        let store = store();
+        let id = project(&store, "Slot JEPA");
+        store
+            .update_board_project(
+                &id,
+                &BoardSettingsUpdate {
+                    enabled: Some(true),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let e1a = titled_experiment(&store, &id, "E1a robot role head: centroid", true);
+        let e1b = titled_experiment(&store, &id, "E1b robot role head: contrastive", true);
+        let e2 = titled_experiment(&store, &id, "E2 object role: contact head", false);
+        let loose = titled_experiment(&store, &id, "Slot swap diagnostic", true);
+        assert_eq!(store.unticketed_experiments(&id).unwrap(), 4);
+
+        let card = store.propose_import(&id, None, &agent()).unwrap();
+        let groups: Vec<import::Group> =
+            serde_json::from_value(card.payload["groups"].clone()).unwrap();
+        assert_eq!(
+            groups
+                .iter()
+                .map(|g| (g.title.as_str(), g.experiment_ids.len()))
+                .collect::<Vec<_>>(),
+            [
+                ("E1: robot role head", 2),
+                ("E2: object role", 1),
+                (import::UNSORTED, 1)
+            ]
+        );
+        assert!(
+            store.list_epics(&id).unwrap().is_empty(),
+            "a draft writes no epics"
+        );
+        // Drafting again replaces the open card instead of stacking a second one.
+        store.propose_import(&id, None, &Actor::User).unwrap();
+        assert_eq!(cards(&store, &id, DecisionKind::Import).len(), 1);
+        assert!(store
+            .resolve_decision(
+                &card.id,
+                &DecisionChoice {
+                    option: Some("import".into()),
+                    ..Default::default()
+                },
+                &agent()
+            )
+            .is_err());
+
+        // The user renames E1 and merges the diagnostic into it.
+        let settled = vec![
+            import::Group {
+                title: "Robot role".into(),
+                experiment_ids: vec![e1a.clone(), e1b.clone(), loose.clone()],
+            },
+            import::Group {
+                title: "Object role".into(),
+                experiment_ids: vec![e2.clone()],
+            },
+        ];
+        store
+            .resolve_decision(
+                &card.id,
+                &DecisionChoice {
+                    option: Some("import".into()),
+                    groups: Some(settled),
+                    ..Default::default()
+                },
+                &Actor::User,
+            )
+            .unwrap();
+        let epics = store.list_epics(&id).unwrap();
+        assert_eq!(
+            epics
+                .iter()
+                .map(|epic| (epic.title.as_str(), epic.status))
+                .collect::<Vec<_>>(),
+            [
+                ("Robot role", EpicStatus::Answered),
+                ("Object role", EpicStatus::Answered)
+            ]
+        );
+        let ticket = store.ticket_for_experiment(&e1a).unwrap().unwrap();
+        assert_eq!(
+            (ticket.status, ticket.proposed_by),
+            (TicketStatus::Done, ProposedBy::User)
+        );
+        assert_eq!(
+            ticket.conclusion.as_deref(),
+            Some("notes on E1a robot role head: centroid")
+        );
+        assert_eq!(ticket.epic_id.as_deref(), Some(epics[0].id.as_str()));
+        assert_eq!(
+            store.ticket_for_experiment(&e2).unwrap().unwrap().status,
+            TicketStatus::Cancelled
+        );
+        assert_eq!(store.unticketed_experiments(&id).unwrap(), 0);
+        assert!(store
+            .propose_import(&id, None, &Actor::User)
+            .unwrap_err()
+            .to_string()
+            .contains("nothing to import"));
+    }
+
+    #[test]
+    fn a_grouping_file_names_experiments_by_id_prefix_and_leaves_the_rest_unsorted() {
+        let store = store();
+        let id = project(&store, "INTACT");
+        store
+            .update_board_project(
+                &id,
+                &BoardSettingsUpdate {
+                    enabled: Some(true),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let a = titled_experiment(&store, &id, "Joint-SAGE P1", true);
+        let b = titled_experiment(&store, &id, "Probe v2", true);
+        let wanted = vec![import::Group {
+            title: "Joint-SAGE".into(),
+            experiment_ids: vec![a[..8].to_string()],
+        }];
+        let card = store.propose_import(&id, Some(wanted), &agent()).unwrap();
+        let groups: Vec<import::Group> =
+            serde_json::from_value(card.payload["groups"].clone()).unwrap();
+        assert_eq!(groups[0].experiment_ids, std::slice::from_ref(&a));
+        assert_eq!(
+            (groups[1].title.as_str(), groups[1].experiment_ids.clone()),
+            (import::UNSORTED, vec![b])
+        );
+        let unknown = vec![import::Group {
+            title: "x".into(),
+            experiment_ids: vec!["zzzz".into()],
+        }];
+        assert!(store.propose_import(&id, Some(unknown), &agent()).is_err());
+        // Discarding writes nothing.
+        store
+            .resolve_decision(
+                &card.id,
+                &DecisionChoice {
+                    option: Some("discard".into()),
+                    ..Default::default()
+                },
+                &Actor::User,
+            )
+            .unwrap();
+        assert!(store.list_epics(&id).unwrap().is_empty());
     }
 }

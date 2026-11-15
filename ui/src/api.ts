@@ -2017,6 +2017,8 @@ export interface BoardDecision {
     spentGpuHours?: number;
     budgetGpuHours?: number | null;
     what?: string;
+    groups?: BoardImportGroup[];
+    nodes?: Record<string, { title: string; status: BoardTicketStatus; archived: boolean }>;
     verdicts?: Record<string, BoardVerdict | null>;
   };
   createdAt: number;
@@ -2050,6 +2052,13 @@ export interface ProjectBoard {
   board: { projectId: string; enabled: boolean; priority: number; confidential: boolean; keyPrefix: string } | null;
   epics: { epic: BoardEpic; criteria: BoardCriteria | null }[];
   tickets: BoardTicket[];
+  /** Experiments in the project that no ticket holds yet. */
+  unticketed: number;
+}
+
+export interface BoardImportGroup {
+  title: string;
+  experimentIds: string[];
 }
 
 export interface BoardEvent {
@@ -2064,6 +2073,7 @@ export interface BoardDecisionChoice {
   selected?: string[];
   option?: string;
   text?: string;
+  groups?: BoardImportGroup[];
 }
 
 export function timeAgo(ms: number): string {
@@ -2499,6 +2509,8 @@ export function createApi(
       get<{ ticket: BoardTicket; events: BoardEvent[]; epic: BoardEpic | null }>(`/api/board/tickets/${encodeURIComponent(ticketId)}`, signal),
     updateProject: (projectId: string, settings: { enabled?: boolean; confidential?: boolean; priority?: number }) =>
       post<{ board: NonNullable<ProjectBoard["board"]> }>(`/api/board/projects/${encodeURIComponent(projectId)}`, settings),
+    proposeImport: (projectId: string) =>
+      post<{ decision: BoardDecision }>(`/api/board/projects/${encodeURIComponent(projectId)}/import`, {}),
     resolve: (decisionId: string, choice: BoardDecisionChoice) =>
       post<{ decision: BoardDecision }>(`/api/board/decisions/${encodeURIComponent(decisionId)}/resolve`, choice),
     move: (ticketId: string, action: "approve" | "reject" | "accept" | "challenge" | "unblock" | "cancel", note?: string) =>

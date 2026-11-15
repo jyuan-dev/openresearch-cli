@@ -6,6 +6,7 @@ import { autoDir, fmtNumber, ltr } from "../i18n";
 import {
   timeAgo,
   type BoardDecisionChoice,
+  type BoardImportGroup,
   type BoardInboxCard,
   type BoardOutcome,
   type BoardTicket,
@@ -359,6 +360,9 @@ function DecisionCard({ card, actions }: { card: BoardInboxCard; actions: Action
         </>
       );
       break;
+    case "import":
+      body = <ImportBody card={card} busy={busy} onResolve={resolve} />;
+      break;
     case "publish_gate":
       body = (
         <>
@@ -382,6 +386,80 @@ function DecisionCard({ card, actions }: { card: BoardInboxCard; actions: Action
   );
 }
 
+/** Merges groups given the same name and drops emptied ones, as the import will see them. */
+function settleGroups(groups: BoardImportGroup[]): BoardImportGroup[] {
+  const merged: BoardImportGroup[] = [];
+  for (const group of groups) {
+    const title = group.title.trim();
+    if (group.experimentIds.length === 0) continue;
+    const same = merged.find((seen) => seen.title === title);
+    if (same) same.experimentIds.push(...group.experimentIds);
+    else merged.push({ title, experimentIds: [...group.experimentIds] });
+  }
+  return merged;
+}
+
+function ImportBody({ card, busy, onResolve }: { card: BoardInboxCard; busy: boolean; onResolve: (choice: BoardDecisionChoice) => void }) {
+  const { decision } = card;
+  const nodes = decision.payload.nodes ?? {};
+  const [groups, setGroups] = useState<BoardImportGroup[]>(() => (decision.payload.groups ?? []).map((group) => ({ ...group, experimentIds: [...group.experimentIds] })));
+  const [expanded, setExpanded] = useState<number | null>(null);
+  const settled = settleGroups(groups);
+  const count = groups.reduce((sum, group) => sum + group.experimentIds.length, 0);
+  const rename = (index: number, title: string) => setGroups((current) => current.map((group, i) => (i === index ? { ...group, title } : group)));
+  const move = (from: number, id: string, to: number) => setGroups((current) => current.map((group, i) => {
+    if (i === from) return { ...group, experimentIds: group.experimentIds.filter((other) => other !== id) };
+    if (i === to) return { ...group, experimentIds: [...group.experimentIds, id] };
+    return group;
+  }));
+  return (
+    <>
+      <CardHeading card={card} title={m.board_card_import_title({ count: fmtNumber(count) })} />
+      <p className={SUB_CLASS_NAME}>{m.board_card_import_description()}</p>
+      <div className="mb-3">
+        {groups.map((group, index) => (
+          <div key={index} className={ROW_CLASS_NAME}>
+            <div className="min-w-0 flex-1">
+              <div className="flex flex-wrap items-center gap-2">
+                <Input className="min-w-0 flex-1" value={group.title} aria-label={m.board_import_group_title_label()} onChange={(event) => rename(index, event.target.value)} dir="auto" />
+                <Button variant="ghost" aria-expanded={expanded === index} onClick={() => setExpanded(expanded === index ? null : index)}>
+                  {m.board_import_group_count({ count: fmtNumber(group.experimentIds.length) })}
+                </Button>
+              </div>
+              {expanded === index && (
+                <ul className="mt-2 mb-0 list-none p-0">
+                  {group.experimentIds.map((id) => (
+                    <li key={id} className="flex flex-wrap items-center gap-2 py-1 text-sm text-text">
+                      <span className="min-w-0 basis-full sm:basis-0 sm:flex-1" dir="auto">{nodes[id]?.title ?? id}</span>
+                      {nodes[id] && <StatusBadge status={nodes[id].status} />}
+                      <select
+                        className="h-8 max-w-48 rounded-md border border-border bg-background px-1.5 text-sm text-text"
+                        aria-label={m.board_import_move_label()}
+                        value={index}
+                        onChange={(event) => move(index, id, Number(event.target.value))}
+                      >
+                        {groups.map((target, targetIndex) => (
+                          <option key={targetIndex} value={targetIndex}>{target.title || "…"}</option>
+                        ))}
+                      </select>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
+      <div className="flex flex-wrap gap-2">
+        <Button variant="primary" disabled={busy || settled.some((group) => group.title === "")} onClick={() => onResolve({ option: "import", groups: settled })}>
+          {m.board_import_confirm({ count: fmtNumber(settled.length) })}
+        </Button>
+        <Button disabled={busy} onClick={() => onResolve({ option: "discard" })}>{m.board_import_discard()}</Button>
+      </div>
+    </>
+  );
+}
+
 const COLUMNS: BoardTicketStatus[][] = [["proposed"], ["ready"], ["running", "waiting"], ["review", "blocked"], ["done"]];
 
 function ProjectBoard({ projectId }: { projectId: string }) {
@@ -389,6 +467,7 @@ function ProjectBoard({ projectId }: { projectId: string }) {
   const board = useQuery(queries.getProjectBoardQuery(projectId));
   const [open, setOpen] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   if (board.error) return <LoadError message={board.error.message} onRetry={() => void board.refetch()} />;
   if (!board.data) return <Loading />;
   const settings = board.data.board;
@@ -410,8 +489,22 @@ function ProjectBoard({ projectId }: { projectId: string }) {
       </section>
     );
   }
-  const { epics, tickets } = board.data;
+  const { epics, unticketed } = board.data;
+  // Tickets of answered or dropped questions leave the board; their epics still list them.
+  const settledEpics = new Set(epics.filter(({ epic }) => epic.status === "answered" || epic.status === "dropped").map(({ epic }) => epic.id));
+  const tickets = board.data.tickets.filter((ticket) => !ticket.epicId || !settledEpics.has(ticket.epicId));
+  const archived = board.data.tickets.length - tickets.length;
   const closed = tickets.filter((ticket) => ticket.status === "rejected" || ticket.status === "cancelled").length;
+  const draftImport = async () => {
+    setError(null);
+    setNotice(null);
+    try {
+      await api.board.proposeImport(projectId);
+      setNotice(m.board_import_drafted());
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  };
   return (
     <>
       <section className={CARD_CLASS_NAME}>
@@ -429,6 +522,15 @@ function ProjectBoard({ projectId }: { projectId: string }) {
         {error && <div role="alert" className="mt-2.5 text-sm text-accent-red">{error}</div>}
       </section>
 
+      {unticketed > 0 && (
+        <section className={`${CARD_CLASS_NAME} mt-3`}>
+          <h3>{m.board_import_prompt({ count: fmtNumber(unticketed) })}</h3>
+          <p className={SUB_CLASS_NAME}>{m.board_import_prompt_description()}</p>
+          <Button onClick={() => void draftImport()}>{m.board_import_draft()}</Button>
+          {notice && <p role="status" className="mt-2.5 mb-0 text-sm text-subtext">{notice}</p>}
+        </section>
+      )}
+
       <h2 className="mt-5 mb-2 text-lg font-semibold text-text">{m.board_epics_heading()}</h2>
       {epics.length === 0 ? (
         <p className={SUB_CLASS_NAME}>{m.board_no_epics()}</p>
@@ -439,10 +541,10 @@ function ProjectBoard({ projectId }: { projectId: string }) {
               <span className="font-mono text-xs text-subtext pt-0.5">{ltr(epic.key)}</span>
               <div className="min-w-0">
                 <div className="text-sm font-medium text-text" dir="auto">{epic.title}</div>
-                <div className="text-sm text-subtext" dir="auto">{epic.question}</div>
+                {epic.question !== epic.title && <div className="text-sm text-subtext" dir="auto">{epic.question}</div>}
               </div>
               <span className="ms-auto shrink-0 text-xs text-subtext">
-                {epic.criteriaVersion > 0 ? m.board_criteria_version({ version: fmtNumber(epic.criteriaVersion) }) : criteria ? m.board_criteria_waiting() : m.board_criteria_none()}
+                {epic.status === "answered" ? m.board_epic_answered() : epic.criteriaVersion > 0 ? m.board_criteria_version({ version: fmtNumber(epic.criteriaVersion) }) : criteria ? m.board_criteria_waiting() : m.board_criteria_none()}
               </span>
             </div>
           ))}
@@ -477,6 +579,7 @@ function ProjectBoard({ projectId }: { projectId: string }) {
         </div>
       )}
       {closed > 0 && <p className="mt-1 text-xs text-subtext">{m.board_closed_count({ count: fmtNumber(closed) })}</p>}
+      {archived > 0 && <p className="mt-1 text-xs text-subtext">{m.board_answered_count({ count: fmtNumber(archived) })}</p>}
       {open && <TicketDetail ticketId={open} onClose={() => setOpen(null)} />}
     </>
   );

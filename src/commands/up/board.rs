@@ -357,6 +357,7 @@ pub(super) fn routes() -> Router<AppState> {
             "/api/board/projects/{id}",
             get(project_board).post(update_project),
         )
+        .route("/api/board/projects/{id}/import", post(propose_import))
         .route("/api/board/tickets/{id}", get(ticket_detail))
         .route("/api/board/tickets/{id}/comment", post(comment))
         .route("/api/board/tickets/{id}/move", post(move_ticket))
@@ -376,7 +377,7 @@ fn ticket_summary(ticket: &Ticket) -> Value {
         "status": ticket.status, "outcome": ticket.outcome, "conclusion": ticket.conclusion,
         "hypothesis": ticket.hypothesis, "estMinutes": ticket.est_minutes, "needsGpus": ticket.needs_gpus,
         "startedAt": ticket.started_at, "sessionId": ticket.session_id, "projectId": ticket.project_id,
-        "experimentId": ticket.experiment_id, "result": ticket.result,
+        "experimentId": ticket.experiment_id, "result": ticket.result, "proposedBy": ticket.proposed_by,
     })
 }
 
@@ -451,7 +452,9 @@ async fn project_board(Path(id): Path<String>) -> ApiResult {
         .get_local_project(&id)?
         .ok_or_else(|| not_found("project"))?;
     let Some(board) = store.board_project(&id)? else {
-        return Ok(Json(json!({"board": null, "epics": [], "tickets": []})));
+        return Ok(Json(
+            json!({"board": null, "epics": [], "tickets": [], "unticketed": 0}),
+        ));
     };
     let epics = store
         .list_epics(&id)?
@@ -462,8 +465,9 @@ async fn project_board(Path(id): Path<String>) -> ApiResult {
         })
         .collect::<crate::error::Result<Vec<_>>>()?;
     let tickets = store.list_tickets(&id)?;
+    let unticketed = store.unticketed_experiments(&id)?;
     Ok(Json(
-        json!({"board": board, "epics": epics, "tickets": tickets}),
+        json!({"board": board, "epics": epics, "tickets": tickets, "unticketed": unticketed}),
     ))
 }
 
@@ -511,6 +515,14 @@ struct CommentReq {
     text: String,
 }
 
+/// Drafts an import card for the project's experiments that have no ticket yet.
+async fn propose_import(Path(id): Path<String>) -> ApiResult {
+    let decision = Store::open()?
+        .propose_import(&id, None, &Actor::User)
+        .map_err(refused)?;
+    Ok(Json(json!({"decision": decision})))
+}
+
 async fn comment(Path(id): Path<String>, Json(req): Json<CommentReq>) -> ApiResult {
     Store::open()?
         .comment_on_ticket(&id, &req.text, &Actor::User)
@@ -545,6 +557,7 @@ struct ResolveReq {
     selected: Option<Vec<String>>,
     option: Option<String>,
     text: Option<String>,
+    groups: Option<Vec<crate::board::import::Group>>,
 }
 
 async fn resolve(Path(id): Path<String>, Json(req): Json<ResolveReq>) -> ApiResult {
@@ -555,6 +568,7 @@ async fn resolve(Path(id): Path<String>, Json(req): Json<ResolveReq>) -> ApiResu
                 selected: req.selected,
                 option: req.option,
                 text: req.text,
+                groups: req.groups,
             },
             &Actor::User,
         )

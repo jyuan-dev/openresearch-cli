@@ -5,6 +5,7 @@
 pub mod brief;
 pub mod checks;
 pub mod gate;
+pub mod import;
 pub mod model;
 pub mod scheduler;
 pub mod transitions;
