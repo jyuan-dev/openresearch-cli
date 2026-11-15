@@ -2,11 +2,14 @@
 //! gate experiment work. Records live in the store (`store::board`); this
 //! module owns their vocabulary and the rules for moving them.
 
+pub mod access;
 pub mod brief;
 pub mod checks;
 pub mod gate;
 pub mod import;
+pub mod install;
 pub mod model;
+pub mod notify;
 pub mod scheduler;
 pub mod transitions;
 

@@ -1353,6 +1353,12 @@ async fn loopback_guard_inner(
                 "This dashboard only serves its private network.".into(),
             ));
         }
+        // This machine's own browser, CLI and agents need nothing; another device signs in.
+        if !peer.is_some_and(|peer| peer.is_loopback()) {
+            if let Some(response) = other_device_sign_in(&request) {
+                return secure_response(response);
+            }
+        }
     }
     let host = request
         .headers()
@@ -1403,6 +1409,68 @@ async fn loopback_guard_inner(
         }
     }
     secure_response(next.run(request).await)
+}
+
+/// None when the device is signed in; otherwise the sign-in redirect or the refusal.
+fn other_device_sign_in(request: &Request) -> Option<Response> {
+    use crate::board::access;
+    // What a phone fetches to install the app; none of it says anything about the research.
+    let path = request.uri().path();
+    if matches!(path, "/manifest.webmanifest" | "/favicon.svg") || path.starts_with("/icons/") {
+        return None;
+    }
+    let token = match access::load(&crate::store::data_dir()) {
+        Ok(Some(token)) => token,
+        Ok(None) => String::new(),
+        Err(error) => {
+            eprintln!("orx up: {error:#}");
+            String::new()
+        }
+    };
+    let header_text = |name| {
+        request
+            .headers()
+            .get(name)
+            .and_then(|value: &HeaderValue| value.to_str().ok())
+    };
+    let target = request
+        .uri()
+        .path_and_query()
+        .map(|target| target.as_str())
+        .unwrap_or("/");
+    let verdict = if token.is_empty() {
+        access::Verdict::Deny
+    } else {
+        access::check(
+            &token,
+            header_text(header::COOKIE),
+            header_text(header::AUTHORIZATION).and_then(|value| value.strip_prefix("Bearer ")),
+            target,
+        )
+    };
+    match verdict {
+        access::Verdict::Allow => None,
+        access::Verdict::SignIn { location, cookie } => {
+            let mut response = StatusCode::SEE_OTHER.into_response();
+            let headers = response.headers_mut();
+            headers.insert(header::LOCATION, HeaderValue::from_str(&location).ok()?);
+            headers.insert(header::SET_COOKIE, HeaderValue::from_str(&cookie).ok()?);
+            headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+            Some(response)
+        }
+        access::Verdict::Deny if request.uri().path().starts_with("/api/") => Some(gateway_error(
+            StatusCode::UNAUTHORIZED,
+            "This device has not signed in. Open the link `orx board token` prints on the workstation.".into(),
+        )),
+        access::Verdict::Deny => {
+            let mut response = (StatusCode::UNAUTHORIZED, access::SIGN_IN_PAGE).into_response();
+            response.headers_mut().insert(
+                header::CONTENT_TYPE,
+                HeaderValue::from_static("text/html; charset=utf-8"),
+            );
+            Some(response)
+        }
+    }
 }
 
 fn secure_response(mut response: Response) -> Response {

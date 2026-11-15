@@ -73,6 +73,28 @@ pub enum BoardCommand {
         #[arg(long, value_name = "FILE")]
         groups: Option<std::path::PathBuf>,
     },
+    /// Print the link that signs another device (your phone over Tailscale)
+    /// in to this machine's dashboard.
+    Token {
+        /// Make a new token; every device signed in with the old one must sign in again.
+        #[arg(long)]
+        rotate: bool,
+        /// The dashboard's port, when it is not the installed service's.
+        #[arg(long)]
+        port: Option<u16>,
+    },
+    /// Keep the dashboard and the board's scheduler running as a systemd user
+    /// service that starts with the machine and is reachable from your other
+    /// devices. Other devices sign in with `orx board token`.
+    Install {
+        #[arg(long, default_value_t = 4791)]
+        port: u16,
+        /// Print the unit file instead of installing it.
+        #[arg(long)]
+        print: bool,
+    },
+    /// Stop and remove the service `orx board install` set up.
+    Uninstall,
     /// Answer a decision card from `orx board`.
     Decide {
         decision_id: String,
@@ -115,6 +137,9 @@ pub enum MachineCommand {
 pub enum BoardSettingKey {
     Checks,
     MaxSessions,
+    /// Phone notifications: `{"url": "http://<tailscale-ip>:<port>/<topic>"}`,
+    /// optionally with "token" and "clickUrl". Pushes carry only a count.
+    Ntfy,
 }
 
 impl BoardSettingKey {
@@ -122,6 +147,7 @@ impl BoardSettingKey {
         match self {
             Self::Checks => "checks",
             Self::MaxSessions => "maxSessions",
+            Self::Ntfy => "ntfy",
         }
     }
 }
@@ -426,6 +452,18 @@ pub fn board(args: BoardArgs) -> Result<()> {
                         serde_json::from_value::<crate::board::checks::Checks>(value.clone())
                             .context("not a set of result checks")?;
                     }
+                    BoardSettingKey::Ntfy => {
+                        if !value.is_null() {
+                            let ntfy: crate::board::notify::Ntfy = serde_json::from_value(
+                                value.clone(),
+                            )
+                            .context("not an ntfy setting like {\"url\": \"http://…/topic\"}")?;
+                            if !ntfy.url.starts_with("http://") && !ntfy.url.starts_with("https://")
+                            {
+                                bail!("The ntfy url is the topic's http(s) address.");
+                            }
+                        }
+                    }
                     BoardSettingKey::MaxSessions => {
                         if value.as_u64().is_none_or(|max| max == 0) {
                             bail!("maxSessions is a whole number above 0.");
@@ -437,6 +475,9 @@ pub fn board(args: BoardArgs) -> Result<()> {
             println!("{}", store.board_setting(key.stored())?);
             Ok(())
         }
+        Some(BoardCommand::Token { rotate, port }) => token(rotate, port),
+        Some(BoardCommand::Install { port, print }) => install(port, print),
+        Some(BoardCommand::Uninstall) => uninstall(),
         Some(BoardCommand::Import { project_id, groups }) => {
             let groups = groups.as_deref().map(read_groups).transpose()?;
             let decision = Store::open()?.propose_import(&project_id, groups, &actor)?;
@@ -493,6 +534,125 @@ pub fn board(args: BoardArgs) -> Result<()> {
             Ok(())
         }
     }
+}
+
+fn unit_path() -> Result<std::path::PathBuf> {
+    let config = crate::config::env_path("XDG_CONFIG_HOME")
+        .or_else(|| crate::config::home_dir().map(|home| home.join(".config")))
+        .ok_or_else(|| anyhow!("Could not find your config directory."))?;
+    Ok(config
+        .join("systemd/user")
+        .join(crate::board::install::UNIT))
+}
+
+/// The installed service's port, if it is installed.
+fn installed_port() -> Option<u16> {
+    let text = std::fs::read_to_string(unit_path().ok()?).ok()?;
+    let rest = text.split("--port ").nth(1)?;
+    rest.split_whitespace().next()?.parse().ok()
+}
+
+fn tailscale_ip() -> Option<String> {
+    let output = crate::process::command("tailscale")
+        .args(["ip", "-4"])
+        .output()
+        .ok()?;
+    output
+        .status
+        .success()
+        .then(|| {
+            String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .next()
+                .unwrap_or("")
+                .trim()
+                .to_string()
+        })
+        .filter(|ip| !ip.is_empty())
+}
+
+fn token(rotate: bool, port: Option<u16>) -> Result<()> {
+    use crate::board::access;
+    let data_dir = crate::store::data_dir();
+    let token = if rotate {
+        access::rotate(&data_dir)?
+    } else {
+        access::load_or_create(&data_dir)?
+    };
+    let port = port.or_else(installed_port).unwrap_or(4791);
+    let host = tailscale_ip().unwrap_or_else(|| "<this machine's Tailscale address>".into());
+    println!("http://{host}:{port}/?{}={token}", access::QUERY);
+    eprintln!(
+        "Open this link once on the device; it stays signed in. Anyone with the link can use the dashboard, so keep it private.{}",
+        if rotate { " Devices signed in with the old link are signed out." } else { "" }
+    );
+    Ok(())
+}
+
+fn systemctl(args: &[&str]) -> Result<()> {
+    let status = crate::process::command("systemctl")
+        .arg("--user")
+        .args(args)
+        .status()
+        .context("running systemctl")?;
+    if !status.success() {
+        bail!("`systemctl --user {}` failed.", args.join(" "));
+    }
+    Ok(())
+}
+
+fn install(port: u16, print: bool) -> Result<()> {
+    let exe = std::env::current_exe().context("finding the orx executable")?;
+    let text = crate::board::install::unit_text(
+        &exe,
+        port,
+        crate::config::env_path("ORX_DATA_DIR").as_deref(),
+        std::env::var("PATH").ok().as_deref(),
+    );
+    if print {
+        print!("{text}");
+        return Ok(());
+    }
+    if std::net::TcpListener::bind(("0.0.0.0", port)).is_err() {
+        eprintln!(
+            "Port {port} is in use (another `orx up`, the desktop app, or a proxy such as a Tailscale bridge). \
+             The service keeps retrying until it is free; stop the other one, or install with `--port`."
+        );
+    }
+    let path = unit_path()?;
+    std::fs::create_dir_all(path.parent().expect("unit path has a parent"))?;
+    std::fs::write(&path, &text).with_context(|| format!("writing {}", path.display()))?;
+    crate::board::access::load_or_create(&crate::store::data_dir())?;
+    systemctl(&["daemon-reload"])?;
+    systemctl(&["enable", "--now", crate::board::install::UNIT])?;
+    // Without lingering the service stops when you log out.
+    let user = std::env::var("USER").unwrap_or_default();
+    let linger = crate::process::command("loginctl")
+        .args(["enable-linger", &user])
+        .status();
+    if !linger.is_ok_and(|status| status.success()) {
+        eprintln!("Could not keep the service running after you log out; run `sudo loginctl enable-linger {user}`.");
+    }
+    println!(
+        "Installed {} ({}), serving port {port}.",
+        crate::board::install::UNIT,
+        path.display()
+    );
+    println!("Sign in your phone with the link `orx board token` prints. Logs: `journalctl --user -u {}`.", crate::board::install::UNIT);
+    Ok(())
+}
+
+fn uninstall() -> Result<()> {
+    let path = unit_path()?;
+    if !path.exists() {
+        println!("{} is not installed.", crate::board::install::UNIT);
+        return Ok(());
+    }
+    systemctl(&["disable", "--now", crate::board::install::UNIT])?;
+    std::fs::remove_file(&path)?;
+    systemctl(&["daemon-reload"])?;
+    println!("Removed {}.", crate::board::install::UNIT);
+    Ok(())
 }
 
 fn read_groups(path: &std::path::Path) -> Result<Vec<crate::board::import::Group>> {

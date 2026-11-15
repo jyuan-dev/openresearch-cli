@@ -821,9 +821,10 @@ pub struct UpArgs {
     #[arg(long, default_value_t = 4791)]
     pub port: u16,
     /// Address to listen on: `127.0.0.1`, or `0.0.0.0` to also serve devices on
-    /// your private network. The dashboard has no login, so anyone who can
-    /// reach it controls your agents and terminals; only do this on a network
-    /// you trust. Public peers, public addresses and hostnames stay refused.
+    /// your private network (including Tailscale). Other devices sign in once
+    /// with the link `orx board token` prints; anyone with that link controls
+    /// your agents and terminals. Public peers, public addresses and hostnames
+    /// stay refused.
     #[arg(
         long,
         default_value = "127.0.0.1",

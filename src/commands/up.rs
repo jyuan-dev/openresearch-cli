@@ -90,6 +90,11 @@ pub async fn run(args: UpArgs) -> Result<()> {
             return Ok(());
         }
     }
+    if let up_remote::Reach::Lan = reach {
+        // Other devices sign in with this token; this machine never needs it.
+        crate::board::access::load_or_create(&crate::store::data_dir())?;
+        eprintln!("orx up: other devices sign in with the link `orx board token` prints");
+    }
     updates::note_startup_image();
     let port = args.port;
     let persistent_host = args.remote_host;
@@ -332,7 +337,7 @@ pub async fn run(args: UpArgs) -> Result<()> {
     // URL, and skip the (futile) browser-open. Otherwise, today's local flow.
     if let up_remote::Reach::Lan = reach {
         eprintln!(
-            "orx up: serving your private network on port {actual_port}; it has no login, so anyone there can use it"
+            "orx up: serving your private network on port {actual_port}; other devices need the sign-in link from `orx board token`"
         );
     }
     if let Some(session) = crate::remote::detect_ssh_session() {
@@ -11357,6 +11362,7 @@ fn mime_for(path: &str) -> &'static str {
         Some("css") => "text/css",
         Some("svg") => "image/svg+xml",
         Some("json") | Some("map") => "application/json",
+        Some("webmanifest") => "application/manifest+json",
         Some("png") => "image/png",
         Some("ico") => "image/x-icon",
         Some("woff2") => "font/woff2",

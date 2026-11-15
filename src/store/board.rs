@@ -1108,6 +1108,19 @@ impl Store {
         Ok(())
     }
 
+    /// What the last phone notification covered.
+    pub fn board_pushed(&self) -> Result<crate::board::notify::Pushed> {
+        Ok(serde_json::from_value(self.board_setting("ntfyPushed")?).unwrap_or_default())
+    }
+
+    pub fn note_board_pushed(&self, pushed: crate::board::notify::Pushed) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO board_settings (k, v) VALUES ('ntfyPushed', ?1) ON CONFLICT(k) DO UPDATE SET v = ?1",
+            [serde_json::to_string(&pushed)?],
+        )?;
+        Ok(())
+    }
+
     /// The executor asks the user something; only this ticket waits for the answer.
     pub fn ask_on_ticket(
         &self,

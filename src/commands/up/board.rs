@@ -9,7 +9,7 @@ use tokio::sync::broadcast;
 
 use super::{bad_request, not_found, ApiResult};
 use super::{new_chat_session, AppState, CreateChatSessionReq};
-use crate::board::{brief, scheduler, ProposedBy, Ticket, TicketStatus};
+use crate::board::{brief, notify, scheduler, ProposedBy, Ticket, TicketStatus};
 use crate::board::{Actor, Decision, TicketAction};
 use crate::engine::bus::RunEvent;
 use crate::error::{anyhow, Result};
@@ -62,7 +62,7 @@ async fn pass(state: &AppState, ended: &[(String, String)]) -> Result<()> {
     // The store is not `Send`: every use of it finishes before the next await.
     // While orx is still detecting agents, a start would fail for no real reason.
     let agents_settling = agents_settling(state).await;
-    let (started, messages, stopping) = {
+    let (started, messages, stopping, notification) = {
         let store = Store::open()?;
         for (run_id, phase) in ended {
             note_run_end(&store, run_id, phase)?;
@@ -82,8 +82,11 @@ async fn pass(state: &AppState, ended: &[(String, String)]) -> Result<()> {
         } else {
             dispatch(&store)?
         };
-        (started, messages, stopping)
+        (started, messages, stopping, push_due(&store)?)
     };
+    if let Some((ntfy, open, newest)) = notification {
+        push(&ntfy, open, newest).await;
+    }
     for (runs, ticket) in stopping {
         let Some(session) = &ticket.session_id else {
             continue;
@@ -126,6 +129,65 @@ async fn pass(state: &AppState, ended: &[(String, String)]) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// The ntfy setting and what to push, when a card newer than the last push waits.
+fn push_due(store: &Store) -> Result<Option<(notify::Ntfy, usize, i64)>> {
+    let Ok(ntfy) = serde_json::from_value::<notify::Ntfy>(store.board_setting("ntfy")?) else {
+        return Ok(None);
+    };
+    let decisions = store.open_decisions(None)?;
+    let newest = decisions.iter().map(|decision| decision.created_at).max();
+    let pushed = store.board_pushed()?;
+    Ok(notify::due(decisions.len(), newest, pushed, now_ms())
+        .then(|| (ntfy, decisions.len(), newest.unwrap_or_default())))
+}
+
+/// Tells the user's phone how many decisions wait, and nothing else.
+async fn push(ntfy: &notify::Ntfy, open: usize, newest: i64) {
+    let client = match crate::net::remote_client()
+        .timeout(Duration::from_secs(10))
+        .build()
+    {
+        Ok(client) => client,
+        Err(error) => {
+            eprintln!("orx up: could not send the board notification: {error}");
+            return;
+        }
+    };
+    let mut request = client
+        .post(&ntfy.url)
+        .header("Title", "OpenResearch")
+        .header("Tags", "bell")
+        .body(notify::message(open));
+    if let Some(token) = &ntfy.token {
+        request = request.bearer_auth(token);
+    }
+    if let Some(click) = &ntfy.click_url {
+        request = request.header("Click", click);
+    }
+    let sent = request
+        .send()
+        .await
+        .and_then(reqwest::Response::error_for_status);
+    if let Err(error) = &sent {
+        eprintln!("orx up: could not send the board notification: {error}");
+    }
+    // A failed push is retried after the same gap, not on every pass.
+    let noted = Store::open().and_then(|store| {
+        let through = if sent.is_ok() {
+            newest
+        } else {
+            store.board_pushed()?.through
+        };
+        store.note_board_pushed(notify::Pushed {
+            through,
+            at: now_ms(),
+        })
+    });
+    if let Err(error) = noted {
+        eprintln!("orx up: could not record the board notification: {error:#}");
+    }
 }
 
 /// Sends the user's answer, challenge or comment to the ticket's chat; queued if it is busy.

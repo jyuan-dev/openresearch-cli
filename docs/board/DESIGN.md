@@ -517,3 +517,33 @@ bundled skill 需要新增 `orx-board` 模块，并修改 `orx-experiment-tree`�
 **已知缺口**
 - 导入后的 Epic 没有回答标准，`orx epic show` 会提示“去提议”，对已回答的 Epic 来说是多余的。
 - 导入的 Epic 没有“重新打开”，要在同一方向继续做，需要新建 Epic。
+
+## 22. 切片 ⑥ 实现记录（部署、登录、推送、PWA）
+
+- **其他设备要登录**（G10）：`orx up --host 0.0.0.0`（包括 Tailscale 访问）时，所有**非本机**的请求都要带访问 token；本机的浏览器、CLI 和 agent 照常不需要。
+  - token 存在数据目录下的 `board-access-token`（0600 权限）。`orx board token` 打印登录链接，形如 `http://<tailscale-ip>:<port>/?access=…`，IP 由 `tailscale ip -4` 取得；`--rotate` 换新 token，所有已登录的设备随之失效。
+  - 在设备上打开一次链接：服务器写入 HttpOnly、SameSite=Strict、有效期一年的 cookie，并 303 跳回去掉 token 的地址，所以 token 不会留在地址栏和历史记录里。也接受 `Authorization: Bearer`。
+  - 没登录时：页面返回一张不含任何项目信息的登录说明页，`/api/*` 返回 401。安装用的 manifest 和图标不需要登录，它们不含研究内容。
+  - 原有的“只服务私有网络”（RFC1918、链路本地、CGNAT/Tailscale）、Host 和 Origin 检查都保留。
+- **常驻服务**：`orx board install [--port 4791] [--print]`。
+  - 写入 `~/.config/systemd/user/orx-board.service`，`ExecStart` 为当前 orx 可执行文件，参数 `up --host 0.0.0.0 --port P --no-browser`。不用 headless 模式，因为 headless 空闲 10 分钟会退出。
+  - 写入当前的 `PATH`，否则服务找不到 claude、codex 等 agent CLI；设置了 `ORX_DATA_DIR` 时一并写入。`Restart=always`。
+  - 然后执行 `enable --now`，并尝试 `loginctl enable-linger`。端口被占用时给出提示。
+  - `orx board uninstall` 停止服务并删除 unit。
+- **ntfy 推送**：`orx board set ntfy '{"url":"http://<ip>:<port>/<topic>","token":"…","clickUrl":"…"}'`。
+  - 正文固定为 “ORX: N waiting for you”，标题 “OpenResearch”，**不含任何研究内容**。
+  - 有比上次推送更新的卡片时，立即推送；两次推送至少间隔 30 秒，期间新增的卡合并到下一条。推送失败也按 30 秒间隔重试。
+  - 推送进度记在 `board_settings.ntfyPushed`，重启后不会重复推送。
+- **PWA**：`manifest.webmanifest`（standalone，主题色 #9a2036）、192/512/maskable PNG 图标和 apple-touch-icon，`index.html` 里补上了 manifest、theme-color 和 iOS 的 meta。服务器以 `application/manifest+json` 返回 manifest。
+
+**e2e**
+- 通过 Tailscale 地址访问：未登录时页面和 API 都返回 401；打开登录链接后 303 跳转并写入 cookie；带 cookie 返回 200；cookie 错误返回 401；本机不带 token 返回 200。
+- 用 Pixel 7 模拟的浏览器通过 Tailscale 登录，在收件箱里批准了 TB-017；manifest 能被解析。
+- 假 ntfy 服务：新卡立即推送 “2 waiting”；3 张卡连续出现时，先推 “3”，约 30 秒后合并推 “5”；重启后不重复推送。
+- 用 scratch 数据真实执行 `board install`，`kill -9` 主进程后 systemd 约 2 秒内重启，对账照常；再 `uninstall`，没有残留。
+
+**注意：你现有的 `orx-tailscale-bridge.service`**
+- 它在 Tailscale 地址的 4791 端口上把请求代理到 127.0.0.1，并自己附上认证 token，所以 tailnet 里的任何设备都能**不登录**直接使用 dashboard。
+- 经过它的请求在 orx 看来来自本机，新的登录检查对它不起作用。
+- 它还占用 4791 端口，会和 `orx board install` 默认的端口冲突。
+- 换成 board 服务后，应停用这个 bridge（由你决定，我没有改动它）。
