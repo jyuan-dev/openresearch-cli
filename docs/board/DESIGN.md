@@ -460,3 +460,34 @@ bundled skill 需要新增 `orx-board` 模块，并修改 `orx-experiment-tree`�
 - 看板发给 ticket 聊天的消息显示为“from Another chat”，应显示为来自研究看板。
 - 本机上所有 `renderApp` 整应用 UI 测试都因路由库报错失败（上游代码同样失败，与看板无关）。看板测试改用组件级 `render()`。
 - 移动端只验证了 390px 宽度的布局，PWA manifest 和推送留在切片 ⑥。
+
+## 20. 切片 ④ 实现记录（闸门与保密）
+
+纯规则在 `src/board/gate.rs`，store 方法 `gate_experiment_create`、`gate_launch`、`gate_publish` 读取输入并执行结论。
+
+- **建节点闸门**（G7、G8）：放在 `local::experiments::create_experiment` 里，CLI、dashboard 和 agent 都经过这一处。只对开启了 board 的项目生效。
+  - 聊天绑定的 ticket 处于 running / waiting → 放行（Executor 的 repair 子节点也算在内）。
+  - **这一轮是你亲自发起的**：判断依据是这一轮的用户消息里有没有 `orx` 来源标记。orx 通知、其他聊天、看板发来的消息都带这个标记，你输入的没有。满足时自动建一张 `user-chat` 的 unplanned ticket，状态直接是 running，挂在这个聊天上，然后放行。同一轮里再建节点归到同一张；你下一次提出要求时另建一张。
+  - 其余情况（agent 在通知触发的轮次里自己决定）→ 拒绝，并提示 `orx ticket propose`。
+  - 没有聊天会话（你在自己的终端或页面上操作）→ 放行，不建 ticket。
+- **派发机器闸门**（G5）：放在 `Api::launch`，CLI 和 dashboard 的 run 都走这里。
+  - ticket 分到了机器 → 只能在那台机器上跑。
+  - 保密项目 → 只允许 `local` 或登记为自有的 SSH 机器；modal、hf、openresearch、未登记或非自有的 SSH 一律拒绝。
+- **公开闸门**（G5）：`orx project share --publish` 和 dashboard 的“发布链接”都经过 `gate_publish`。
+  - 保密项目会被拒绝，并打开一张 `publish_gate` 卡（同时只有一张）。
+  - 你选“允许一次”后，下一次发布消耗这张许可；选“保持保密”则继续拦截。
+- **取消即停算力**：ticket 被取消或拒绝时，调度器先取消它尚未结束的 run（它的实验，以及它的聊天发起的 run），再停聊天。取消的 run id 记在 `chat_stopped` 事件里。
+- **unplanned ticket 的聊天被删除**：直接转为 blocked，不会重新排队，避免被别的 Executor 接手。
+- **界面**：公开卡的主按钮是“保持保密”；“聊天中要求”标记 unplanned ticket。
+
+**e2e（隔离数据目录，真实 agent）**
+- 没有 ticket 的 agent 建节点被拒。
+- `share --publish` 被拦下并生成卡片。
+- 保密项目里 `ssh:rented` 和 `modal` 的 run 在提交前就被拒。
+- 你在聊天里让 agent 建并运行实验 → 自动生成 TB-007（unplanned），节点挂上，run 在本机启动。
+- `orx ticket cancel TB-007` → run 在 2 秒内进入 Cancelled，聊天停止。
+
+**已知缺口**
+- 判断依据是“这一轮由谁发起”。如果你在一轮里要求 X，agent 在同一轮里顺手又建了 Y，Y 也会被算进这张 ticket。
+- unplanned ticket 没有 Epic，不进调度队列，也不参与 Epic 预算；结束后需要你在看板上接受或取消。
+- 闸门依赖 `ORX_CHAT_SESSION_ID` 等环境变量，属于“防误操作”，防不住刻意绕过的本机进程。

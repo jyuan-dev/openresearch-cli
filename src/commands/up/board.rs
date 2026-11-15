@@ -9,7 +9,7 @@ use tokio::sync::broadcast;
 
 use super::{bad_request, not_found, ApiResult};
 use super::{new_chat_session, AppState, CreateChatSessionReq};
-use crate::board::{brief, scheduler, Ticket, TicketStatus};
+use crate::board::{brief, scheduler, ProposedBy, Ticket, TicketStatus};
 use crate::board::{Actor, Decision, TicketAction};
 use crate::engine::bus::RunEvent;
 use crate::error::{anyhow, Result};
@@ -72,7 +72,11 @@ async fn pass(state: &AppState, ended: &[(String, String)]) -> Result<()> {
             store.check_epic_budget(&epic)?;
         }
         let messages = store.undelivered_ticket_messages()?;
-        let stopping = store.tickets_to_stop()?;
+        let stopping = store
+            .tickets_to_stop()?
+            .into_iter()
+            .map(|ticket| Ok((store.ticket_live_runs(&ticket)?, ticket)))
+            .collect::<Result<Vec<_>>>()?;
         let started = if agents_settling {
             Vec::new()
         } else {
@@ -80,16 +84,31 @@ async fn pass(state: &AppState, ended: &[(String, String)]) -> Result<()> {
         };
         (started, messages, stopping)
     };
-    for ticket in stopping {
+    for (runs, ticket) in stopping {
         let Some(session) = &ticket.session_id else {
             continue;
         };
+        // Called off means its compute stops too, not only the chat.
+        for run in &runs {
+            let reason = format!("the user {} {}", ticket.status, ticket.key);
+            if let Err(error) = super::api_v2::cancel_run(run, &reason).await {
+                eprintln!(
+                    "orx up: could not cancel {}'s run {}: {error:#}",
+                    ticket.key, run.id
+                );
+            }
+        }
         // The user called the ticket off: its chat stops and drops anything queued.
         if let Err(error) = state.chat.interrupt_by_user(session).await {
             eprintln!("orx up: could not stop {}'s chat: {error:#}", ticket.key);
             continue;
         }
-        Store::open()?.note_ticket_once(&ticket, "chat_stopped", &json!({"sessionId": session}))?;
+        let cancelled: Vec<&str> = runs.iter().map(|run| run.id.as_str()).collect();
+        Store::open()?.note_ticket_once(
+            &ticket,
+            "chat_stopped",
+            &json!({"sessionId": session, "cancelledRuns": cancelled}),
+        )?;
     }
     for (event, ticket) in messages {
         if let Err(error) = deliver(state, &event, &ticket).await {
@@ -185,8 +204,20 @@ fn reconcile(store: &Store) -> Result<()> {
             None => (now - ticket.started_at.unwrap_or(now) > UNBOUND_GRACE_MS)
                 .then_some("its chat never started"),
         };
-        if let Some(reason) = lost {
-            store.requeue_ticket(&ticket.id, reason)?;
+        match lost {
+            // The user's own chat asked for it; another chat must not pick it up.
+            Some(reason) if ticket.proposed_by == ProposedBy::UserChat => {
+                store.move_ticket(
+                    &ticket.id,
+                    TicketAction::Block,
+                    &Actor::System(None),
+                    json!({"reason": reason}),
+                )?;
+            }
+            Some(reason) => {
+                store.requeue_ticket(&ticket.id, reason)?;
+            }
+            None => {}
         }
     }
     Ok(())

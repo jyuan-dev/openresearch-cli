@@ -474,6 +474,10 @@ fn inbox(json: bool) -> Result<()> {
                 crate::board::DecisionKind::ApproveCriteria => {
                     format!("criteria v{}", decision.payload["version"])
                 }
+                crate::board::DecisionKind::PublishGate => format!(
+                    "publish: {} (--option allow|deny)",
+                    decision.payload["what"].as_str().unwrap_or("")
+                ),
                 _ => String::new(),
             };
             vec![

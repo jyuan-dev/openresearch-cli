@@ -133,6 +133,7 @@ function TicketLine({ ticket, project }: { ticket: BoardTicketSummary; project?:
         <span className="font-medium" dir="auto">{ticket.title}</span>
         <StatusBadge status={ticket.status} />
         {ticket.outcome && <OutcomeBadge outcome={ticket.outcome} />}
+        {ticket.proposedBy === "user-chat" && <Badge size="small">{m.board_unplanned()}</Badge>}
       </div>
       {project && <div className="mt-0.5 text-xs text-subtext" dir="auto">{project}</div>}
       {ticket.hypothesis && ticket.status === "proposed" && (
@@ -355,6 +356,18 @@ function DecisionCard({ card, actions }: { card: BoardInboxCard; actions: Action
             {m.board_budget_spent({ spent: fmtNumber(Math.round((decision.payload.spentGpuHours ?? 0) * 10) / 10), budget: fmtNumber(decision.payload.budgetGpuHours ?? 0) })}
           </p>
           <Button disabled={busy} onClick={() => resolve({})}>{m.board_budget_seen()}</Button>
+        </>
+      );
+      break;
+    case "publish_gate":
+      body = (
+        <>
+          <CardHeading card={card} title={m.board_card_publish_title()} />
+          <p className={SUB_CLASS_NAME}>{m.board_card_publish_description({ what: decision.payload.what ?? "" })}</p>
+          <div className="flex flex-wrap gap-2">
+            <Button variant="primary" disabled={busy} onClick={() => resolve({ option: "deny" })}>{m.board_publish_deny()}</Button>
+            <Button disabled={busy} onClick={() => resolve({ option: "allow" })}>{m.board_publish_allow()}</Button>
+          </div>
         </>
       );
       break;

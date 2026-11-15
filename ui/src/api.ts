@@ -2016,12 +2016,13 @@ export interface BoardDecision {
     mark?: number;
     spentGpuHours?: number;
     budgetGpuHours?: number | null;
+    what?: string;
     verdicts?: Record<string, BoardVerdict | null>;
   };
   createdAt: number;
 }
 
-export type BoardTicketSummary = Pick<BoardTicket, "id" | "key" | "title" | "kind" | "status" | "outcome" | "conclusion" | "hypothesis" | "estMinutes" | "needsGpus" | "startedAt" | "sessionId" | "projectId" | "experimentId" | "result">;
+export type BoardTicketSummary = Pick<BoardTicket, "id" | "key" | "title" | "kind" | "status" | "outcome" | "conclusion" | "hypothesis" | "estMinutes" | "needsGpus" | "startedAt" | "sessionId" | "projectId" | "experimentId" | "result"> & Partial<Pick<BoardTicket, "proposedBy">>;
 
 export interface BoardInboxCard {
   decision: BoardDecision;

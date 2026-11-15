@@ -101,7 +101,13 @@ impl Api {
         let admission = (self.admit)(&project)?;
         args.forwarded = true;
         crate::local::apply_compute_default(&mut args.backend, &mut args.flavor);
-        args.backend.get_or_insert_with(|| "local".into());
+        let backend = args.backend.get_or_insert_with(|| "local".into()).clone();
+        self.store().gate_launch(
+            &args.exp_id,
+            args.chat_session_id.as_deref(),
+            &backend,
+            args.host.as_deref(),
+        )?;
         super::require_caller_settings(&args, &super::absolute_config_dir()).await?;
         self.commands.run(args, admission).await
     }

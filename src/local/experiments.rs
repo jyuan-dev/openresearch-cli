@@ -352,6 +352,8 @@ fn create_experiment_locked(
             ));
         }
     }
+    let launching = crate::local::chat::launching_chat_session();
+    store.gate_experiment_create(&project.id, launching.as_deref(), title.as_deref())?;
     let base = match slug {
         Some(s) => slugify(s),
         None => slugify(title.as_deref().unwrap_or("experiment")),
@@ -389,7 +391,7 @@ fn create_experiment_locked(
         agent_status: "idle".to_string(),
         created_at: now,
         updated_at: now,
-        chat_session_id: crate::local::chat::launching_chat_session(),
+        chat_session_id: launching,
         archived: false,
     };
     store.create_local_experiment(&experiment)?;

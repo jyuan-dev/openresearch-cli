@@ -2519,9 +2519,14 @@ async fn publish_project_link(
         .admit(&id)
         .ok_or_else(|| bad_request("project deletion is in progress"))?;
     reject_if_moving(&state)?;
-    let project = Store::open()?
+    let store = Store::open()?;
+    let project = store
         .get_local_project(&id)?
         .ok_or_else(|| not_found("project"))?;
+    store
+        .gate_publish(&id, "Share → Publish link")
+        .map_err(bad_request)?;
+    drop(store);
     run_operation(
         &state.operations,
         query.background,

@@ -127,3 +127,21 @@ test("a failed answer stays on its card with the reason", async () => {
   assert.deepEqual(writes, []);
   assert.ok(find('[role="alert"]', "still needs approved answer criteria"));
 });
+
+test("a publish card keeps the project private unless the user allows one publish", async () => {
+  const { writes } = await openBoard({
+    decisions: [card({ id: "d1", kind: "publish_gate", payload: { what: "orx project share --publish" } }, [])],
+  });
+  assert.ok(document.body.textContent.includes(m.board_card_publish_title()));
+  assert.ok(document.body.textContent.includes("orx project share --publish"));
+  assert.ok(find("button", m.board_publish_deny()), "keeping it private is offered");
+  await click(find("button", m.board_publish_allow()));
+  assert.deepEqual(writes, [{ path: "/api/board/decisions/d1/resolve", body: { option: "allow" } }]);
+});
+
+test("a ticket the user asked for in chat is marked as such", async () => {
+  await openBoard({
+    running: [{ ...ticket("t1", "SJ-004", "lr 1e-3", { status: "running", sessionId: "chat-1", startedAt: Date.now(), proposedBy: "user-chat" }), projectName: project.name }],
+  });
+  assert.ok(document.body.textContent.includes(m.board_unplanned()));
+});

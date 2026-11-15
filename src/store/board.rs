@@ -8,6 +8,7 @@ use serde_json::{json, Value};
 
 use super::{now_ms, Store};
 use crate::board::checks::{self, Checks};
+use crate::board::gate;
 use crate::board::scheduler::{self, Candidate, MachineSlots};
 use crate::board::transitions::{self, TicketAction};
 use crate::board::{
@@ -1398,6 +1399,12 @@ impl Store {
             }
             // A budget card informs; seeing it is the decision. Topping up is a change to the epic.
             DecisionKind::Budget => {}
+            DecisionKind::PublishGate => match choice.option.as_deref() {
+                Some("allow" | "deny") => {}
+                _ => bail!(
+                    "A publish card is answered with `--option allow` (once) or `--option deny`."
+                ),
+            },
             other => bail!("`{other}` cards cannot be decided yet."),
         }
         self.record_choice(&decision, choice)?;
@@ -1788,6 +1795,27 @@ impl Store {
             .collect()
     }
 
+    /// Runs of a ticket that have not ended: its experiment's, and any its chat launched.
+    pub fn ticket_live_runs(&self, ticket: &Ticket) -> Result<Vec<super::StoredRun>> {
+        let mut runs = match &ticket.experiment_id {
+            Some(experiment) => self.list_runs_by_experiment(experiment)?,
+            None => Vec::new(),
+        };
+        if let Some(session) = &ticket.session_id {
+            for run in self.list_runs_by_project(&ticket.project_id)? {
+                if run.chat_session_id.as_ref() == Some(session)
+                    && !runs.iter().any(|seen| seen.id == run.id)
+                {
+                    runs.push(run);
+                }
+            }
+        }
+        runs.retain(|run| {
+            !crate::engine::Phase::parse(&run.status).is_some_and(crate::engine::Phase::is_terminal)
+        });
+        Ok(runs)
+    }
+
     /// Cancelled or rejected tickets whose chat has not been stopped yet.
     pub fn tickets_to_stop(&self) -> Result<Vec<Ticket>> {
         let mut statement = self.conn.prepare(&format!(
@@ -1924,6 +1952,211 @@ impl Store {
             })?
             .collect::<rusqlite::Result<_>>()?;
         Ok(machines)
+    }
+
+    /// Whether the user, not orx or another chat, wrote the message that
+    /// started the chat's latest turn.
+    pub fn human_started_turn(&self, session_id: &str) -> Result<bool> {
+        let Some(turn) = self.latest_chat_turn(session_id)? else {
+            return Ok(false);
+        };
+        let Some(message) = turn
+            .user_message_id
+            .as_deref()
+            .map(|id| self.get_chat_message(id))
+            .transpose()?
+            .flatten()
+        else {
+            return Ok(false);
+        };
+        let parts: Vec<Value> = serde_json::from_str(&message.parts_json).unwrap_or_default();
+        Ok(message.role == "user"
+            && parts
+                .iter()
+                .any(|part| part["type"] == "text" && part.get("orx").is_none()))
+    }
+
+    /// Lets a chat create an experiment in `project_id` only for a ticket it
+    /// works, or when the user asked for it in this turn, which opens an
+    /// unplanned ticket. Without a chat the user is acting directly.
+    pub fn gate_experiment_create(
+        &self,
+        project_id: &str,
+        session_id: Option<&str>,
+        title: Option<&str>,
+    ) -> Result<()> {
+        let Some(session_id) = session_id else {
+            return Ok(());
+        };
+        if !self
+            .board_project(project_id)?
+            .is_some_and(|board| board.enabled)
+        {
+            return Ok(());
+        }
+        let bound = self
+            .ticket_for_session(session_id)?
+            .filter(|ticket| ticket.project_id == project_id);
+        let human = self.human_started_turn(session_id)?;
+        match gate::create_verdict(bound.as_ref(), human) {
+            gate::CreateVerdict::Allow => Ok(()),
+            gate::CreateVerdict::Unplanned => {
+                self.start_unplanned_ticket(project_id, session_id, title)?;
+                Ok(())
+            }
+            gate::CreateVerdict::Deny(why) => bail!("{why}"),
+        }
+    }
+
+    /// A ticket for an experiment the user asked for in their own chat: it is
+    /// approved by the asking, so it starts running in that chat.
+    pub fn start_unplanned_ticket(
+        &self,
+        project_id: &str,
+        session_id: &str,
+        title: Option<&str>,
+    ) -> Result<Ticket> {
+        let board = self.require_board_project(project_id)?;
+        let tx = self.conn.unchecked_transaction()?;
+        let seq: i64 = tx.query_row(
+            "UPDATE board_projects SET next_ticket = next_ticket + 1 WHERE project_id = ?1
+             RETURNING next_ticket - 1",
+            [project_id],
+            |row| row.get(0),
+        )?;
+        let id = uuid::Uuid::new_v4().to_string();
+        let key = format!("{}-{seq:03}", board.key_prefix);
+        let now = now_ms();
+        let title = title
+            .map(str::trim)
+            .filter(|title| !title.is_empty())
+            .unwrap_or("Experiment asked for in chat");
+        tx.execute(
+            "INSERT INTO board_tickets (id, project_id, key, kind, title, status, session_id,
+                 proposed_by, started_at, created_at, updated_at)
+             VALUES (?1, ?2, ?3, 'experiment', ?4, 'running', ?5, ?6, ?7, ?7, ?7)",
+            params![
+                id,
+                project_id,
+                key,
+                title,
+                session_id,
+                ProposedBy::UserChat.as_str(),
+                now
+            ],
+        )?;
+        Self::append_board_event(
+            &tx,
+            project_id,
+            &id,
+            &Actor::User,
+            "unplanned",
+            &json!({"key": key, "sessionId": session_id}),
+        )?;
+        tx.commit()?;
+        self.require_ticket(&id)
+    }
+
+    /// Refuses a run of `experiment_id` on a machine its ticket or its
+    /// project's confidentiality does not allow.
+    pub fn gate_launch(
+        &self,
+        experiment_id: &str,
+        session_id: Option<&str>,
+        backend: &str,
+        host: Option<&str>,
+    ) -> Result<()> {
+        let Some(experiment) = self.get_local_experiment(experiment_id)? else {
+            return Ok(());
+        };
+        let Some(board) = self
+            .board_project(&experiment.project_id)?
+            .filter(|board| board.enabled)
+        else {
+            return Ok(());
+        };
+        let ticket = match self.ticket_for_experiment(experiment_id)? {
+            Some(ticket) => Some(ticket),
+            None => session_id
+                .map(|session| self.ticket_for_session(session))
+                .transpose()?
+                .flatten(),
+        }
+        .filter(|ticket| matches!(ticket.status, TicketStatus::Running | TicketStatus::Waiting));
+        let machine = ticket
+            .as_ref()
+            .and_then(|ticket| ticket.machine_id.as_deref())
+            .map(|id| self.machine(id))
+            .transpose()?
+            .flatten();
+        gate::backend_verdict(
+            board.confidential,
+            ticket.as_ref().zip(machine.as_ref()),
+            &self.list_machines()?,
+            &gate::launch_target(backend, host),
+        )
+        .map_err(|why| anyhow!("{why}"))
+    }
+
+    /// Lets a confidential project be published only on a one-time permit the
+    /// user granted on a publish card; otherwise opens that card and refuses.
+    pub fn gate_publish(&self, project_id: &str, what: &str) -> Result<()> {
+        if !self
+            .board_project(project_id)?
+            .is_some_and(|board| board.enabled && board.confidential)
+        {
+            return Ok(());
+        }
+        let tx = self.conn.unchecked_transaction()?;
+        let permit: Option<String> = tx
+            .query_row(
+                "SELECT d.id FROM board_decisions d
+                 WHERE d.project_id = ?1 AND d.kind = 'publish_gate' AND d.status = 'resolved'
+                   AND json_extract(d.resolution_json, '$.option') = 'allow'
+                   AND NOT EXISTS(SELECT 1 FROM board_events e
+                                  WHERE e.subject_id = d.id AND e.kind = 'publish_permit_used')
+                 ORDER BY d.resolved_at LIMIT 1",
+                [project_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if let Some(decision_id) = permit {
+            Self::append_board_event(
+                &tx,
+                project_id,
+                &decision_id,
+                &Actor::System(None),
+                "publish_permit_used",
+                &json!({"what": what}),
+            )?;
+            tx.commit()?;
+            return Ok(());
+        }
+        let open = tx
+            .query_row(
+                "SELECT 1 FROM board_decisions
+                 WHERE project_id = ?1 AND kind = 'publish_gate' AND status = 'open'",
+                [project_id],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some();
+        if !open {
+            Self::insert_decision(
+                &tx,
+                project_id,
+                None,
+                DecisionKind::PublishGate,
+                &[],
+                &json!({"what": what}),
+                &format!("publish:{project_id}:{}", uuid::Uuid::new_v4()),
+            )?;
+        }
+        tx.commit()?;
+        bail!(
+            "This project is confidential until its patent is filed, so publishing it ({what}) needs the user's \
+             permission. A publish card is waiting on the research board; once the user allows it, run this again."
+        )
     }
 }
 
@@ -2731,5 +2964,209 @@ mod tests {
             .note_ticket_once(&cancelled, "chat_stopped", &json!({}))
             .unwrap();
         assert!(store.tickets_to_stop().unwrap().is_empty());
+    }
+
+    /// Records a turn in `session` that a message with these parts started.
+    fn turn(store: &Store, session: &str, parts: Value) {
+        let message = uuid::Uuid::new_v4().to_string();
+        let now = now_ms();
+        store
+            .conn
+            .execute(
+                "INSERT INTO chat_messages (id, session_id, role, parts_json, created_at) VALUES (?1, ?2, 'user', ?3, ?4)",
+                params![message, session, parts.to_string(), now],
+            )
+            .unwrap();
+        store
+            .conn
+            .execute(
+                "INSERT INTO chat_turns (id, session_id, user_message_id, assistant_message_id, client_turn_id,
+                     request_hash, prepared_input, settings_json, state, delivery_state, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, 'a', ?1, '', '', '{}', 'running', 'pending', ?4, ?4)",
+                params![uuid::Uuid::new_v4().to_string(), session, message, now],
+            )
+            .unwrap();
+    }
+
+    fn typed(store: &Store, session: &str) {
+        turn(
+            store,
+            session,
+            json!([{"id": "p0", "type": "text", "text": "try lr 1e-3"}]),
+        );
+    }
+
+    fn notified(store: &Store, session: &str) {
+        turn(
+            store,
+            session,
+            json!([{"id": "p0", "type": "text", "text": "run ended", "orx": {"kind": "message"}}]),
+        );
+    }
+
+    #[test]
+    fn a_user_asking_in_chat_opens_an_unplanned_ticket_and_an_agent_on_its_own_is_refused() {
+        let (store, id, epic) = board_with_epic("Slot JEPA");
+        typed(&store, "chat-u");
+        store
+            .gate_experiment_create(&id, Some("chat-u"), Some("lr 1e-3"))
+            .unwrap();
+        let unplanned = store.ticket_for_session("chat-u").unwrap().unwrap();
+        assert_eq!(
+            (
+                unplanned.status,
+                unplanned.proposed_by,
+                unplanned.title.as_str()
+            ),
+            (TicketStatus::Running, ProposedBy::UserChat, "lr 1e-3")
+        );
+        assert_eq!(store.board_events(&unplanned.id).unwrap()[0].actor, "user");
+        // A second create in the same turn belongs to the same ticket.
+        store
+            .gate_experiment_create(&id, Some("chat-u"), None)
+            .unwrap();
+        store.link_ticket_experiment("chat-u", "exp-1").unwrap();
+        assert_eq!(store.list_tickets(&id).unwrap().len(), 1);
+
+        // The agent's own follow-up turn may not branch out on its own.
+        notified(&store, "chat-u");
+        let refused = store
+            .gate_experiment_create(&id, Some("chat-u"), None)
+            .unwrap_err()
+            .to_string();
+        assert!(refused.contains("orx ticket propose"), "{refused}");
+        // The user's next request is a ticket of its own.
+        typed(&store, "chat-u");
+        store
+            .gate_experiment_create(&id, Some("chat-u"), Some("lr 3e-3"))
+            .unwrap();
+        assert_eq!(store.list_tickets(&id).unwrap().len(), 2);
+
+        // An executor creates for its running ticket even though orx wrote its turn.
+        let ticket = running(&store, &id, &epic, "lr 3e-4");
+        store.bind_ticket_session(&ticket.id, "chat-x").unwrap();
+        notified(&store, "chat-x");
+        store
+            .gate_experiment_create(&id, Some("chat-x"), None)
+            .unwrap();
+        // A chat with no turn of the user's is an agent acting alone.
+        assert!(store
+            .gate_experiment_create(&id, Some("chat-none"), None)
+            .is_err());
+        // The user's own terminal and projects without a board are not gated.
+        store.gate_experiment_create(&id, None, None).unwrap();
+        let plain = project(&store, "plain");
+        store
+            .gate_experiment_create(&plain, Some("chat-none"), None)
+            .unwrap();
+    }
+
+    fn local_experiment(store: &Store, project_id: &str) -> String {
+        let id = uuid::Uuid::new_v4().to_string();
+        store
+            .create_local_experiment(&crate::local::model::LocalExperiment {
+                id: id.clone(),
+                project_id: project_id.into(),
+                parent_experiment_id: None,
+                slug: id.clone(),
+                branch_name: format!("orx/{id}"),
+                title: None,
+                description: None,
+                run_command: String::new(),
+                agent_status: "idle".into(),
+                created_at: 1,
+                updated_at: 1,
+                chat_session_id: None,
+                archived: false,
+            })
+            .unwrap();
+        id
+    }
+
+    #[test]
+    fn runs_launch_on_the_tickets_machine_and_confidential_runs_stay_on_owned_ones() {
+        let (store, id, epic) = board_with_epic("Slot JEPA");
+        let lab = store.upsert_machine("lab", "ssh:lab", 2, true).unwrap();
+        store
+            .upsert_machine("rented", "ssh:rented", 8, false)
+            .unwrap();
+        let ticket = approved(&store, &id, &epic, "lr 3e-4");
+        store.dispatch_ticket(&ticket.id, Some(&lab.id)).unwrap();
+        store.bind_ticket_session(&ticket.id, "chat-x").unwrap();
+        let experiment = local_experiment(&store, &id);
+        store.link_ticket_experiment("chat-x", &experiment).unwrap();
+        store
+            .gate_launch(&experiment, Some("chat-x"), "ssh", Some("lab"))
+            .unwrap();
+        let elsewhere = store
+            .gate_launch(&experiment, Some("chat-x"), "local", None)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            elsewhere.contains("--backend ssh --host lab"),
+            "{elsewhere}"
+        );
+
+        let loose = local_experiment(&store, &id);
+        store.gate_launch(&loose, None, "local", None).unwrap();
+        for (backend, host) in [("ssh", Some("rented")), ("modal", None)] {
+            let refused = store
+                .gate_launch(&loose, None, backend, host)
+                .unwrap_err()
+                .to_string();
+            assert!(refused.contains("confidential"), "{refused}");
+        }
+        store
+            .update_board_project(
+                &id,
+                &BoardSettingsUpdate {
+                    confidential: Some(false),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        store.gate_launch(&loose, None, "modal", None).unwrap();
+    }
+
+    #[test]
+    fn publishing_a_confidential_project_takes_one_permit_per_publish() {
+        let (store, id, _epic) = board_with_epic("Slot JEPA");
+        let first = store
+            .gate_publish(&id, "share --publish")
+            .unwrap_err()
+            .to_string();
+        assert!(first.contains("publish card"), "{first}");
+        assert!(store.gate_publish(&id, "share --publish").is_err());
+        let card = cards(&store, &id, DecisionKind::PublishGate);
+        assert_eq!(card.len(), 1, "a repeated attempt reuses the open card");
+        assert!(store
+            .resolve_decision(&card[0].id, &DecisionChoice::default(), &Actor::User)
+            .is_err());
+        let allow = DecisionChoice {
+            option: Some("allow".into()),
+            ..Default::default()
+        };
+        assert!(store
+            .resolve_decision(&card[0].id, &allow, &agent())
+            .is_err());
+        store
+            .resolve_decision(&card[0].id, &allow, &Actor::User)
+            .unwrap();
+        store.gate_publish(&id, "share --publish").unwrap();
+        assert!(
+            store.gate_publish(&id, "share --publish").is_err(),
+            "the permit is used up"
+        );
+        let deny = DecisionChoice {
+            option: Some("deny".into()),
+            ..Default::default()
+        };
+        let second = cards(&store, &id, DecisionKind::PublishGate);
+        store
+            .resolve_decision(&second[0].id, &deny, &Actor::User)
+            .unwrap();
+        assert!(store.gate_publish(&id, "share --publish").is_err());
+        let open = project(&store, "open");
+        store.gate_publish(&open, "share --publish").unwrap();
     }
 }

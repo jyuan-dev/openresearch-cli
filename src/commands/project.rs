@@ -47,6 +47,7 @@ pub async fn run(args: crate::ProjectArgs) -> Result<()> {
                 artifacts: !no_artifacts,
             };
             if publish {
+                store.gate_publish(&project.id, "orx project share --publish")?;
                 let creds = signed_in().await?;
                 let scratch = crate::local::git::TemporaryDirectory::new("orx-publish")?;
                 let out = scratch.path().join("project.orx");
