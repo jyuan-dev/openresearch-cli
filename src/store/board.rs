@@ -1270,7 +1270,11 @@ impl Store {
                     let ticket = self.require_ticket(ticket_id)?;
                     let gaps = self.ready_gaps(&ticket)?;
                     if ticket.status == TicketStatus::Proposed && !gaps.is_empty() {
-                        bail!("{} cannot be approved yet: it still needs {}.", ticket.key, gaps.join(" and "));
+                        bail!(
+                            "{} cannot be approved yet: it still needs {}.",
+                            ticket.key,
+                            gaps.join(" and ")
+                        );
                     }
                 }
                 for ticket_id in &decision.ticket_ids {
@@ -1283,20 +1287,38 @@ impl Store {
                     } else {
                         TicketAction::Reject
                     };
-                    self.move_ticket(ticket_id, action, actor, json!({"decision": decision.id, "note": choice.text}))?;
+                    self.move_ticket(
+                        ticket_id,
+                        action,
+                        actor,
+                        json!({"decision": decision.id, "note": choice.text}),
+                    )?;
                 }
             }
             DecisionKind::Question => {
-                let answer = choice.option.clone().or_else(|| choice.text.clone()).ok_or_else(|| {
-                    anyhow!("Answer with `--option <one of the options>` or `--text \"…\"`.")
-                })?;
-                if let (Some(option), Some(options)) = (&choice.option, decision.payload["options"].as_array()) {
-                    if !options.is_empty() && !options.iter().any(|known| known.as_str() == Some(option)) {
+                let answer = choice
+                    .option
+                    .clone()
+                    .or_else(|| choice.text.clone())
+                    .ok_or_else(|| {
+                        anyhow!("Answer with `--option <one of the options>` or `--text \"…\"`.")
+                    })?;
+                if let (Some(option), Some(options)) =
+                    (&choice.option, decision.payload["options"].as_array())
+                {
+                    if !options.is_empty()
+                        && !options.iter().any(|known| known.as_str() == Some(option))
+                    {
                         bail!("`{option}` is not one of this question's options.");
                     }
                 }
                 for ticket_id in &decision.ticket_ids {
-                    self.move_ticket(ticket_id, TicketAction::Answer, actor, json!({"decision": decision.id, "answer": answer}))?;
+                    self.move_ticket(
+                        ticket_id,
+                        TicketAction::Answer,
+                        actor,
+                        json!({"decision": decision.id, "answer": answer}),
+                    )?;
                 }
             }
             DecisionKind::AcceptBatch => {
@@ -1307,7 +1329,12 @@ impl Store {
                         continue;
                     }
                     if selected.contains(ticket_id) {
-                        self.move_ticket(ticket_id, TicketAction::Accept, actor, json!({"decision": decision.id}))?;
+                        self.move_ticket(
+                            ticket_id,
+                            TicketAction::Accept,
+                            actor,
+                            json!({"decision": decision.id}),
+                        )?;
                     } else {
                         // Unticked results get a card of their own to accept or dispute.
                         Self::insert_decision(
@@ -1326,10 +1353,15 @@ impl Store {
                 let (action, detail) = match choice.option.as_deref() {
                     Some("accept") => (TicketAction::Accept, json!({"decision": decision.id})),
                     Some("challenge") => {
-                        let note = choice.text.clone().filter(|text| !text.trim().is_empty()).ok_or_else(|| {
-                            anyhow!("Say what to look at again: `--text \"…\"`.")
-                        })?;
-                        (TicketAction::Challenge, json!({"decision": decision.id, "note": note}))
+                        let note = choice
+                            .text
+                            .clone()
+                            .filter(|text| !text.trim().is_empty())
+                            .ok_or_else(|| anyhow!("Say what to look at again: `--text \"…\"`."))?;
+                        (
+                            TicketAction::Challenge,
+                            json!({"decision": decision.id, "note": note}),
+                        )
                     }
                     _ => bail!("Choose `--option accept` or `--option challenge --text \"…\"`."),
                 };
@@ -1341,10 +1373,17 @@ impl Store {
                 let action = match choice.option.as_deref() {
                     Some("unblock") => TicketAction::Unblock,
                     Some("reject") => TicketAction::Reject,
-                    _ => bail!("Choose `--option unblock` to send it back to ready, or `--option reject`."),
+                    _ => bail!(
+                        "Choose `--option unblock` to send it back to ready, or `--option reject`."
+                    ),
                 };
                 for ticket_id in &decision.ticket_ids {
-                    self.move_ticket(ticket_id, action, actor, json!({"decision": decision.id, "note": choice.text}))?;
+                    self.move_ticket(
+                        ticket_id,
+                        action,
+                        actor,
+                        json!({"decision": decision.id, "note": choice.text}),
+                    )?;
                 }
             }
             DecisionKind::ApproveCriteria => {
@@ -1357,7 +1396,9 @@ impl Store {
                     .ok_or_else(|| anyhow!("criteria decision {} has no epic", decision.id))?;
                 self.approve_criteria(epic, version, actor)?;
             }
-            other => bail!("`{other}` cards are not decided from the CLI yet; open the board in the dashboard."),
+            // A budget card informs; seeing it is the decision. Topping up is a change to the epic.
+            DecisionKind::Budget => {}
+            other => bail!("`{other}` cards cannot be decided yet."),
         }
         self.record_choice(&decision, choice)?;
         self.require_decision(&decision.id)
@@ -1774,6 +1815,21 @@ impl Store {
             "delivered",
             &json!({"eventId": event_id, "sessionId": session_id}),
         )
+    }
+
+    /// Changes whenever any board record does, for the dashboard's event stream.
+    pub fn board_change_marker(&self) -> Result<String> {
+        Ok(self.conn.query_row(
+            "SELECT COALESCE((SELECT MAX(id) FROM board_events), 0) || ':' ||
+                    COALESCE((SELECT MAX(updated_at) FROM board_tickets), 0) || ':' ||
+                    COALESCE((SELECT MAX(updated_at) FROM board_epics), 0) || ':' ||
+                    COALESCE((SELECT MAX(MAX(created_at, COALESCE(resolved_at, 0))) FROM board_decisions), 0) || ':' ||
+                    COALESCE((SELECT MAX(updated_at) FROM board_machines), 0) || ':' ||
+                    COALESCE((SELECT MAX(updated_at) FROM board_projects), 0) || ':' ||
+                    (SELECT COUNT(*) FROM board_machines)",
+            [],
+            |row| row.get(0),
+        )?)
     }
 
     pub fn board_events(&self, subject_id: &str) -> Result<Vec<BoardEvent>> {

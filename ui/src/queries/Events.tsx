@@ -7,6 +7,7 @@ import { inputSummaryChanged } from "./chatState";
 import { useEffect, useMemo } from "react";
 
 import { artifactFamilies } from "./invalidation";
+import { boardFamilies } from "./board";
 
 function upsert<T extends { id: string; updatedAt: number }>(rows: T[] | undefined, next: T) {
   if (!rows) return undefined;
@@ -88,6 +89,10 @@ export function QueryEvents() {
     },
     onUsageChanged() {
       invalidateFamilies(["getUsage"], scope);
+    },
+    onBoard() {
+      if (!isCurrentScope(scope)) return;
+      invalidateFamilies(boardFamilies, scope);
     },
     onReconnect() {
       if (!isCurrentScope(scope)) return;

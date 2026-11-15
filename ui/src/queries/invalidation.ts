@@ -3,6 +3,7 @@ import type { Query, QueryFilters } from "@tanstack/react-query";
 import type { ChatSession, Experiment, Run } from "../api";
 
 import { markLiveUpdate } from "./live";
+import { boardFamilies } from "./board";
 
 export const isCommit = (ref: unknown) => typeof ref === "string" && /^[0-9a-f]{40}$/i.test(ref);
 
@@ -21,7 +22,7 @@ export function isImmutableQuery(query: Query) {
 const fileBodies = ["resolvedFile", "getProjectFile", "getArtifactFileText", "getArtifactFileMetadata"];
 
 export const artifactFamilies = ["getArtifacts", "getArtifactFileText", "getArtifactFileMetadata"];
-const liveFamilies = ["getSessionExperiments", "getSubagentTranscript", "listChatActiveRuns", "listProjects", "listProjectActivity", "listSidebarChatSessions", "listExperiments", "listRuns", "listChatSessions", "getChatMessages", "getHarnesses", "getUpdateStatus", "getUsage", ...artifactFamilies, ...fileBodies, "getAbsoluteFile", "fileVersion", "getCodeTree", "getSessionWorktree", "getRunDiff", "getExperimentDiff", "listEngineHosts"];
+const liveFamilies = ["getSessionExperiments", "getSubagentTranscript", "listChatActiveRuns", "listProjects", "listProjectActivity", "listSidebarChatSessions", "listExperiments", "listRuns", "listChatSessions", "getChatMessages", "getHarnesses", "getUpdateStatus", "getUsage", ...artifactFamilies, ...fileBodies, "getAbsoluteFile", "fileVersion", "getCodeTree", "getSessionWorktree", "getRunDiff", "getExperimentDiff", "listEngineHosts", ...boardFamilies];
 
 const settingsFamilies: Record<string, readonly string[]> = {
   hf: ["getHfSettings", "getComputeSettings", "getEnvVars", "getTrackioRuns"],
@@ -147,6 +148,7 @@ export function createInvalidation(client: WorkspaceClient) {
     if (path === "/api/user-skills" || /^\/api\/user-skills\/[^/]+$/.test(path)) { invalidate(["listUserSkills", "getSkills", "getSkillContent"], scope); return; }
     if (path === "/api/latex-templates") { invalidate(["listLatexTemplates"], scope); return; }
     if (path === "/api/overleaf/token") { invalidate(["getOverleafSettings", "getOverleafState", "getOverleafStatus"], scope); return; }
+    if (path.startsWith("/api/board/")) { invalidate(boardFamilies, scope); return; }
     if (path.startsWith("/api/update/")) { invalidate(["getUpdateStatus", "getLocalMachine"], scope); return; }
     if (path.startsWith("/api/remote/") || path.startsWith("/_orx/")) {
       invalidate(["listRemoteSessions", "getRuntime"], scope);

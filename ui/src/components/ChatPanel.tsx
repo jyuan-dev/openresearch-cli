@@ -93,6 +93,7 @@ import {
   ArrowUpRight,
   Bell,
   BookMarked,
+  SquareKanban,
   BookOpen,
   ChartSpline,
   Check,
@@ -5947,8 +5948,8 @@ export function ChatPanel({
   /** Run a harness setup command (`path` is its setup route) in the right panel's terminal tab. */
   onRunSetup?: (command: string, path: string) => void;
   /** Settings sections replace chat; Artifacts remains a right-panel tool. */
-  mainView: "chat" | SettingsTab;
-  onSelectMainView: (view: "chat" | SettingsTab) => void;
+  mainView: "chat" | "board" | SettingsTab;
+  onSelectMainView: (view: "chat" | "board" | SettingsTab) => void;
   /** Open a project file in the right pane (chat tool rows are clickable).
    * `sessionId` is the chat session the click came from, so relative paths
    * can resolve against that session's worktree. */
@@ -8794,6 +8795,16 @@ export function ChatPanel({
         onPointerDown={onResizeRail}
       />}
       {railHeader}
+      <nav className="rail-nav flex flex-col gap-0.5 px-2 pt-1 shrink-0">
+        <button
+          className={`rail-nav-item flex items-center gap-2.5 py-1.5 px-2 text-sm text-text rounded-md text-start [&:hover:not(.active)]:bg-surface [&.active]:bg-panel [&.active]:font-medium ${mainView === "board" ? "active" : ""}`}
+          aria-current={mainView === "board" ? "page" : undefined}
+          onClick={() => onSelectMainView("board")}
+        >
+          <SquareKanban size={16} />
+          {m.board_nav()}
+        </button>
+      </nav>
       <div className="rail-section-head flex items-center justify-between shrink-0 pt-3.5 pe-2 pb-0 ps-3.25">
         <div className="rail-section-label p-0 text-sm font-medium text-subtext">
           {sidebarGrouping === "projects" ? m.projects_home_projects() : sidebarGrouping === "list" ? m.chat_all_sessions() : m.sidebar_inbox()}
@@ -8921,8 +8932,8 @@ export function ChatPanel({
       <>
         {displayedRail}
         <section inert={contentInert} className="chat-pane flex-1 min-w-0 flex flex-col bg-background min-h-0">
-          {mainView === "project" && (!railOpen || mobileRail) && <div className="mac-titlebar-spacer flex h-12 mac-titlebar:h-titlebar shrink-0 items-center">{railReopen}</div>}
-          {mainView !== "project" && <SettingsHeader active={mainView} onSelect={onSelectMainView} leading={railReopen} />}
+          {(mainView === "project" || mainView === "board") && (!railOpen || mobileRail) && <div className="mac-titlebar-spacer flex h-12 mac-titlebar:h-titlebar shrink-0 items-center">{railReopen}</div>}
+          {mainView !== "project" && mainView !== "board" && <SettingsHeader active={mainView} onSelect={onSelectMainView} leading={railReopen} />}
           {/* Keyed per view so no tab inherits the chat thread's or another tab's scroll offset. */}
           <div key={mainView} className="settings-view-scroll flex-1 min-h-0 overflow-y-auto [scrollbar-gutter:stable_both-edges]">
             {contentError ? <div role="alert" className="p-6 text-subtext">{contentError}<Button onClick={onRetryContent}>{m.app_retry()}</Button></div>

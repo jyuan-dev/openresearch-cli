@@ -7,13 +7,21 @@ use std::time::Duration;
 use serde_json::json;
 use tokio::sync::broadcast;
 
+use super::{bad_request, not_found, ApiResult};
 use super::{new_chat_session, AppState, CreateChatSessionReq};
 use crate::board::{brief, scheduler, Ticket, TicketStatus};
+use crate::board::{Actor, Decision, TicketAction};
 use crate::engine::bus::RunEvent;
 use crate::error::{anyhow, Result};
 use crate::local::autonomy::Autonomy;
 use crate::local::chat::{OrxDisplay, OrxKind, OrxSource, TurnOverrides};
+use crate::store::board::{BoardSettingsUpdate, DecisionChoice};
 use crate::store::{now_ms, Store};
+use axum::extract::Path;
+use axum::routing::{delete, get, post};
+use axum::{Json, Router};
+use serde::Deserialize;
+use serde_json::Value;
 
 /// How long a dispatched ticket may sit without a chat before it is started again.
 const UNBOUND_GRACE_MS: i64 = 2 * 60 * 1000;
@@ -306,4 +314,244 @@ async fn start_executor(state: &AppState, ticket: &Ticket) -> Result<()> {
         return Err(error);
     }
     Ok(())
+}
+
+// The dashboard's board API. The page acts for the user: it is the one place
+// approvals, acceptances and answers come from outside the CLI.
+
+pub(super) fn routes() -> Router<AppState> {
+    Router::new()
+        .route("/api/board/inbox", get(inbox))
+        .route(
+            "/api/board/projects/{id}",
+            get(project_board).post(update_project),
+        )
+        .route("/api/board/tickets/{id}", get(ticket_detail))
+        .route("/api/board/tickets/{id}/comment", post(comment))
+        .route("/api/board/tickets/{id}/move", post(move_ticket))
+        .route("/api/board/decisions/{id}/resolve", post(resolve))
+        .route("/api/board/machines", get(list_machines).post(add_machine))
+        .route("/api/board/machines/{name}", delete(remove_machine))
+}
+
+/// Board refusals are the user's to act on, so they come back as 400s with the store's message.
+fn refused(error: crate::error::Error) -> super::ApiError {
+    bad_request(error)
+}
+
+fn ticket_summary(ticket: &Ticket) -> Value {
+    json!({
+        "id": ticket.id, "key": ticket.key, "title": ticket.title, "kind": ticket.kind,
+        "status": ticket.status, "outcome": ticket.outcome, "conclusion": ticket.conclusion,
+        "hypothesis": ticket.hypothesis, "estMinutes": ticket.est_minutes, "needsGpus": ticket.needs_gpus,
+        "startedAt": ticket.started_at, "sessionId": ticket.session_id, "projectId": ticket.project_id,
+        "experimentId": ticket.experiment_id, "result": ticket.result,
+    })
+}
+
+fn decision_json(store: &Store, decision: &Decision) -> crate::error::Result<Value> {
+    let tickets = decision
+        .ticket_ids
+        .iter()
+        .filter_map(|id| store.ticket(id).transpose())
+        .collect::<crate::error::Result<Vec<_>>>()?;
+    let epic = decision
+        .epic_id
+        .as_deref()
+        .map(|id| store.epic(id))
+        .transpose()?
+        .flatten();
+    let criteria = match (&decision.kind, &epic) {
+        (crate::board::DecisionKind::ApproveCriteria, Some(epic)) => decision.payload["version"]
+            .as_i64()
+            .map(|version| store.criteria(&epic.id, version))
+            .transpose()?
+            .flatten(),
+        _ => None,
+    };
+    let project = store.get_local_project(&decision.project_id)?;
+    Ok(json!({
+        "decision": decision,
+        "projectName": project.map(|project| project.name),
+        "epic": epic.map(|epic| json!({"id": epic.id, "key": epic.key, "title": epic.title, "question": epic.question})),
+        "criteria": criteria,
+        "tickets": tickets.iter().map(ticket_summary).collect::<Vec<_>>(),
+    }))
+}
+
+async fn inbox() -> ApiResult {
+    let store = Store::open()?;
+    let decisions = store
+        .open_decisions(None)?
+        .iter()
+        .map(|decision| decision_json(&store, decision))
+        .collect::<crate::error::Result<Vec<_>>>()?;
+    let running = store
+        .tickets_in(&[TicketStatus::Running, TicketStatus::Waiting])?
+        .iter()
+        .map(|ticket| {
+            let mut row = ticket_summary(ticket);
+            row["projectName"] = json!(store
+                .get_local_project(&ticket.project_id)?
+                .map(|project| project.name));
+            Ok(row)
+        })
+        .collect::<crate::error::Result<Vec<_>>>()?;
+    let slots = store.machine_slots()?;
+    let machines = store
+        .list_machines()?
+        .into_iter()
+        .map(|machine| {
+            let in_use = slots
+                .iter()
+                .find(|slot| slot.machine_id == machine.id)
+                .map_or(0, |slot| slot.in_use);
+            json!({"machine": machine, "inUse": in_use})
+        })
+        .collect::<Vec<_>>();
+    Ok(Json(
+        json!({"decisions": decisions, "running": running, "machines": machines}),
+    ))
+}
+
+async fn project_board(Path(id): Path<String>) -> ApiResult {
+    let store = Store::open()?;
+    store
+        .get_local_project(&id)?
+        .ok_or_else(|| not_found("project"))?;
+    let Some(board) = store.board_project(&id)? else {
+        return Ok(Json(json!({"board": null, "epics": [], "tickets": []})));
+    };
+    let epics = store
+        .list_epics(&id)?
+        .into_iter()
+        .map(|epic| {
+            let criteria = store.latest_criteria(&epic.id)?;
+            Ok(json!({"epic": epic, "criteria": criteria}))
+        })
+        .collect::<crate::error::Result<Vec<_>>>()?;
+    let tickets = store.list_tickets(&id)?;
+    Ok(Json(
+        json!({"board": board, "epics": epics, "tickets": tickets}),
+    ))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProjectBoardReq {
+    enabled: Option<bool>,
+    priority: Option<i64>,
+    confidential: Option<bool>,
+}
+
+async fn update_project(Path(id): Path<String>, Json(req): Json<ProjectBoardReq>) -> ApiResult {
+    let board = Store::open()?
+        .update_board_project(
+            &id,
+            &BoardSettingsUpdate {
+                enabled: req.enabled,
+                key_prefix: None,
+                priority: req.priority,
+                confidential: req.confidential,
+                deadline_ms: None,
+            },
+        )
+        .map_err(refused)?;
+    Ok(Json(json!({"board": board})))
+}
+
+async fn ticket_detail(Path(id): Path<String>) -> ApiResult {
+    let store = Store::open()?;
+    let ticket = store.ticket(&id)?.ok_or_else(|| not_found("ticket"))?;
+    let events = store.board_events(&ticket.id)?;
+    let epic = ticket
+        .epic_id
+        .as_deref()
+        .map(|id| store.epic(id))
+        .transpose()?
+        .flatten();
+    Ok(Json(
+        json!({"ticket": ticket, "events": events, "epic": epic}),
+    ))
+}
+
+#[derive(Deserialize)]
+struct CommentReq {
+    text: String,
+}
+
+async fn comment(Path(id): Path<String>, Json(req): Json<CommentReq>) -> ApiResult {
+    Store::open()?
+        .comment_on_ticket(&id, &req.text, &Actor::User)
+        .map_err(refused)?;
+    Ok(Json(json!({"ok": true})))
+}
+
+#[derive(Deserialize)]
+struct MoveReq {
+    action: String,
+    note: Option<String>,
+}
+
+async fn move_ticket(Path(id): Path<String>, Json(req): Json<MoveReq>) -> ApiResult {
+    let action = match req.action.as_str() {
+        "approve" => TicketAction::Approve,
+        "reject" => TicketAction::Reject,
+        "accept" => TicketAction::Accept,
+        "challenge" => TicketAction::Challenge,
+        "unblock" => TicketAction::Unblock,
+        "cancel" => TicketAction::Cancel,
+        other => return Err(bad_request(format!("`{other}` is not a ticket action"))),
+    };
+    let ticket = Store::open()?
+        .move_ticket(&id, action, &Actor::User, json!({"note": req.note}))
+        .map_err(refused)?;
+    Ok(Json(json!({"ticket": ticket})))
+}
+
+#[derive(Deserialize)]
+struct ResolveReq {
+    selected: Option<Vec<String>>,
+    option: Option<String>,
+    text: Option<String>,
+}
+
+async fn resolve(Path(id): Path<String>, Json(req): Json<ResolveReq>) -> ApiResult {
+    let decision = Store::open()?
+        .resolve_decision(
+            &id,
+            &DecisionChoice {
+                selected: req.selected,
+                option: req.option,
+                text: req.text,
+            },
+            &Actor::User,
+        )
+        .map_err(refused)?;
+    Ok(Json(json!({"decision": decision})))
+}
+
+async fn list_machines() -> ApiResult {
+    Ok(Json(json!({"machines": Store::open()?.list_machines()?})))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MachineReq {
+    name: String,
+    backend: String,
+    gpu_slots: i64,
+    own: bool,
+}
+
+async fn add_machine(Json(req): Json<MachineReq>) -> ApiResult {
+    let machine = Store::open()?
+        .upsert_machine(&req.name, &req.backend, req.gpu_slots, req.own)
+        .map_err(refused)?;
+    Ok(Json(json!({"machine": machine})))
+}
+
+async fn remove_machine(Path(name): Path<String>) -> ApiResult {
+    Store::open()?.remove_machine(&name).map_err(refused)?;
+    Ok(Json(json!({"ok": true})))
 }

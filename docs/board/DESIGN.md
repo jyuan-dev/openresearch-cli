@@ -444,3 +444,19 @@ bundled skill 需要新增 `orx-board` 模块，并修改 `orx-experiment-tree`�
 - **取消或拒绝 ticket**：调度器会停掉它的聊天，并清空排队的消息。它已经启动的 run **还不会**自动取消，留待切片 ④ 处理。
 - **并发保护**：`move_ticket` 用“状态仍是读到的那个”作为更新条件，同一张 ticket 不会被派发两次。
 - **全局设置**：`orx board set checks '<json>'`、`orx board set max-sessions <n>`。
+
+## 19. 切片 ③ 实现记录
+
+- **入口**：左侧栏 “Research board / 研究看板”，位于 Customize 下方，路由 `/projects/$projectId/board`。服务端（`workspace_state.rs`）和共享测试向量 `tests/contracts/locations.json` 都已接受这个位置，因此重开应用会回到看板。
+- **页面**：一个页面三个分页（Segmented）。
+  - **待你处理**：跨项目的 Decision 卡和运行中的 ticket，以及 GPU 槽位占用。
+  - **本项目**：开关、研究问题、按状态分列的 ticket（自动换行的网格，不做横向滚动），点 ticket 展开活动记录、评论和取消。
+  - **机器**：列出、添加、移除机器。
+- **实时更新**：SSE `board.updated`，服务端用一个变化标记（`board_change_marker`）覆盖所有 board 表。CLI 或 agent 在另一个进程写入后，打开的页面约 0.2 秒内刷新（已实测）。`/api/board/*` 的写入按 URL 失效 board 查询族；断线重连时这些查询族也会被修复。
+- **文案**：94 个 key，11 种语言都已翻译。计数一律写成“标签：数字”，不使用复数形式。
+- **HTTP 即用户**：dashboard 调用 board API 时视为用户本人。和 CLI 依赖 `ORX_CHAT_SESSION_ID` 一样，这只能防止 agent 误操作，防不住刻意绕过的本机进程。
+
+**已知缺口（后续处理）**
+- 看板发给 ticket 聊天的消息显示为“from Another chat”，应显示为来自研究看板。
+- 本机上所有 `renderApp` 整应用 UI 测试都因路由库报错失败（上游代码同样失败，与看板无关）。看板测试改用组件级 `render()`。
+- 移动端只验证了 390px 宽度的布局，PWA manifest 和推送留在切片 ⑥。

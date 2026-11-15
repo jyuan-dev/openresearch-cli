@@ -89,6 +89,8 @@ export interface OrxEventHandlers {
   onArtifacts?: (projectId: string) => void;
   /** A re-read of the machine's plans finished. */
   onUsageChanged?: () => void;
+  /** Something on the research board changed, here or in another process. */
+  onBoard?: () => void;
 }
 
 type EntityObservers = Pick<OrxEventHandlers, "onRun" | "onRunLog" | "onReconnect">;
@@ -367,6 +369,7 @@ export function createEvents(client: WorkspaceClient) {
             ref.current.onProject?.(d.project);
           }
         });
+        es.addEventListener("board.updated", () => ref.current.onBoard?.());
         es.addEventListener("files.updated", (e) => {
           const d = parse<{ projectId: string }>(e as MessageEvent);
           if (d?.projectId) ref.current.onArtifacts?.(d.projectId);

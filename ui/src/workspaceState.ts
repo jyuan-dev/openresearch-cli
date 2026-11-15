@@ -89,7 +89,7 @@ export function parsePane(value: unknown): Pane | undefined {
 }
 
 export interface Destination {
-  kind: "home" | "resume" | "task" | "skills" | "settings";
+  kind: "home" | "resume" | "task" | "skills" | "board" | "settings";
   projectId?: string;
   sessionId?: string;
   section?: SettingsSection;
@@ -106,6 +106,7 @@ export function parseDestination(pathname: string): Destination | null {
   if (!validId(projectId)) return null;
   if (parts.length === 3 || (parts.length === 4 && parts[3] === "")) return { kind: "resume", projectId };
   if (parts.length === 4 && parts[3] === "skills") return { kind: "skills", projectId };
+  if (parts.length === 4 && parts[3] === "board") return { kind: "board", projectId };
   if (parts.length === 5 && parts[3] === "tasks" && validId(leaf)) return { kind: "task", projectId, ...(leaf === "new" ? {} : { sessionId: leaf }) };
   if (parts.length === 5 && parts[3] === "settings") {
     const section = renamedSettingsSections[leaf] ?? leaf;

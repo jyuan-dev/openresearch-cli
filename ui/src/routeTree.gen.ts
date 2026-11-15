@@ -17,6 +17,7 @@ import { Route as ProjectsIndexRouteImport } from './routes/projects.index'
 import { Route as ProjectsProjectIdRouteImport } from './routes/projects.$projectId'
 import { Route as ReproduceSplatRouteImport } from './routes/reproduce.$'
 import { Route as ProjectsProjectIdIndexRouteImport } from './routes/projects.$projectId.index'
+import { Route as ProjectsProjectIdBoardRouteImport } from './routes/projects.$projectId.board'
 import { Route as ProjectsProjectIdSkillsRouteImport } from './routes/projects.$projectId.skills'
 import { Route as ProjectsProjectIdSettingsTabRouteImport } from './routes/projects.$projectId.settings.$tab'
 import { Route as ProjectsProjectIdTasksSessionIdRouteImport } from './routes/projects.$projectId.tasks.$sessionId'
@@ -62,6 +63,11 @@ const ProjectsProjectIdIndexRoute = ProjectsProjectIdIndexRouteImport.update({
   path: '/',
   getParentRoute: () => ProjectsProjectIdRoute,
 } as any)
+const ProjectsProjectIdBoardRoute = ProjectsProjectIdBoardRouteImport.update({
+  id: '/board',
+  path: '/board',
+  getParentRoute: () => ProjectsProjectIdRoute,
+} as any)
 const ProjectsProjectIdSkillsRoute = ProjectsProjectIdSkillsRouteImport.update({
   id: '/skills',
   path: '/skills',
@@ -94,6 +100,7 @@ export interface FileRoutesByFullPath {
   '/projects/$projectId': typeof ProjectsProjectIdRouteWithChildren
   '/reproduce/$': typeof ReproduceSplatRoute
   '/projects/': typeof ProjectsIndexRoute
+  '/projects/$projectId/board': typeof ProjectsProjectIdBoardRoute
   '/projects/$projectId/skills': typeof ProjectsProjectIdSkillsRoute
   '/projects/$projectId/': typeof ProjectsProjectIdIndexRoute
   '/projects/$projectId/settings/$tab': typeof ProjectsProjectIdSettingsTabRoute
@@ -106,6 +113,7 @@ export interface FileRoutesByTo {
   '/remote-launch': typeof RemoteLaunchRoute
   '/reproduce/$': typeof ReproduceSplatRoute
   '/projects': typeof ProjectsIndexRoute
+  '/projects/$projectId/board': typeof ProjectsProjectIdBoardRoute
   '/projects/$projectId/skills': typeof ProjectsProjectIdSkillsRoute
   '/projects/$projectId': typeof ProjectsProjectIdIndexRoute
   '/projects/$projectId/settings/$tab': typeof ProjectsProjectIdSettingsTabRoute
@@ -121,6 +129,7 @@ export interface FileRoutesById {
   '/projects/$projectId': typeof ProjectsProjectIdRouteWithChildren
   '/reproduce/$': typeof ReproduceSplatRoute
   '/projects/': typeof ProjectsIndexRoute
+  '/projects/$projectId/board': typeof ProjectsProjectIdBoardRoute
   '/projects/$projectId/skills': typeof ProjectsProjectIdSkillsRoute
   '/projects/$projectId/': typeof ProjectsProjectIdIndexRoute
   '/projects/$projectId/settings/$tab': typeof ProjectsProjectIdSettingsTabRoute
@@ -137,6 +146,7 @@ export interface FileRouteTypes {
     | '/projects/$projectId'
     | '/reproduce/$'
     | '/projects/'
+    | '/projects/$projectId/board'
     | '/projects/$projectId/skills'
     | '/projects/$projectId/'
     | '/projects/$projectId/settings/$tab'
@@ -149,6 +159,7 @@ export interface FileRouteTypes {
     | '/remote-launch'
     | '/reproduce/$'
     | '/projects'
+    | '/projects/$projectId/board'
     | '/projects/$projectId/skills'
     | '/projects/$projectId'
     | '/projects/$projectId/settings/$tab'
@@ -163,6 +174,7 @@ export interface FileRouteTypes {
     | '/projects/$projectId'
     | '/reproduce/$'
     | '/projects/'
+    | '/projects/$projectId/board'
     | '/projects/$projectId/skills'
     | '/projects/$projectId/'
     | '/projects/$projectId/settings/$tab'
@@ -236,6 +248,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ProjectsProjectIdIndexRouteImport
       parentRoute: typeof ProjectsProjectIdRoute
     }
+    '/projects/$projectId/board': {
+      id: '/projects/$projectId/board'
+      path: '/board'
+      fullPath: '/projects/$projectId/board'
+      preLoaderRoute: typeof ProjectsProjectIdBoardRouteImport
+      parentRoute: typeof ProjectsProjectIdRoute
+    }
     '/projects/$projectId/skills': {
       id: '/projects/$projectId/skills'
       path: '/skills'
@@ -268,6 +287,7 @@ declare module '@tanstack/react-router' {
 }
 
 interface ProjectsProjectIdRouteChildren {
+  ProjectsProjectIdBoardRoute: typeof ProjectsProjectIdBoardRoute
   ProjectsProjectIdSkillsRoute: typeof ProjectsProjectIdSkillsRoute
   ProjectsProjectIdIndexRoute: typeof ProjectsProjectIdIndexRoute
   ProjectsProjectIdSettingsTabRoute: typeof ProjectsProjectIdSettingsTabRoute
@@ -276,6 +296,7 @@ interface ProjectsProjectIdRouteChildren {
 }
 
 const ProjectsProjectIdRouteChildren: ProjectsProjectIdRouteChildren = {
+  ProjectsProjectIdBoardRoute: ProjectsProjectIdBoardRoute,
   ProjectsProjectIdSkillsRoute: ProjectsProjectIdSkillsRoute,
   ProjectsProjectIdIndexRoute: ProjectsProjectIdIndexRoute,
   ProjectsProjectIdSettingsTabRoute: ProjectsProjectIdSettingsTabRoute,

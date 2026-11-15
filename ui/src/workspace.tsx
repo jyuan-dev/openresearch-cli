@@ -7,6 +7,7 @@ import { createProjectQueries } from "./queries/projects";
 import { createFileQueries } from "./queries/files";
 import { createSettingsQueries } from "./queries/settings";
 import { createChatQueries } from "./queries/chat";
+import { createBoardQueries } from "./queries/board";
 import { createChatStore } from "./queries/chatStore";
 import { createGlobalPersistence } from "./workspacePersistence";
 import { createProjectPersistence } from "./useProjectWorkspace";
@@ -23,6 +24,7 @@ export function createWorkspace(identity: string, basePath = "", queryClient = c
     ...createFileQueries(client, api),
     ...createSettingsQueries(client, api, events),
     ...createChatQueries(client, api, events),
+    ...createBoardQueries(client, api),
   };
   const chat = createChatStore(client, queries);
   const persistence = createGlobalPersistence(client, api, queries);
@@ -48,7 +50,8 @@ export type Workspace = ReturnType<typeof createWorkspace>;
 export type WorkspaceQueries = ReturnType<typeof createProjectQueries> &
   ReturnType<typeof createFileQueries> &
   ReturnType<typeof createSettingsQueries> &
-  ReturnType<typeof createChatQueries>;
+  ReturnType<typeof createChatQueries> &
+  ReturnType<typeof createBoardQueries>;
 export type WorkspaceEvents = ReturnType<typeof createEvents>;
 export const WorkspaceContext = createContext<Workspace | null>(null);
 

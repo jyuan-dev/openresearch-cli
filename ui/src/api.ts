@@ -1937,6 +1937,134 @@ export interface PromptAnswer {
 
 // --- helpers shared across views --------------------------------------------
 
+// The research board (`orx board`): epics, tickets and the cards that wait for the user.
+export type BoardTicketStatus = "proposed" | "ready" | "running" | "waiting" | "review" | "done" | "blocked" | "rejected" | "cancelled";
+export type BoardOutcome = "supports" | "refutes" | "inconclusive";
+export type BoardDecisionKind = "approve_batch" | "accept_batch" | "accept_one" | "question" | "blocked" | "budget" | "publish_gate" | "import" | "close_epic" | "approve_criteria";
+
+export interface BoardTicket {
+  id: string;
+  projectId: string;
+  epicId: string | null;
+  key: string;
+  kind: "experiment" | "analysis";
+  batchId: string | null;
+  title: string;
+  hypothesis: string | null;
+  changeSpec: string | null;
+  status: BoardTicketStatus;
+  priority: number;
+  baseExperimentId: string | null;
+  experimentId: string | null;
+  needsGpus: number;
+  estMinutes: number | null;
+  sessionId: string | null;
+  machineId: string | null;
+  repairCount: number;
+  outcome: BoardOutcome | null;
+  coreHypothesis: boolean;
+  result: unknown;
+  conclusion: string | null;
+  tainted: boolean;
+  taintedReason: string | null;
+  proposedBy: "user" | "agent" | "user-chat";
+  startedAt: number | null;
+  finishedAt: number | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface BoardEpic {
+  id: string;
+  projectId: string;
+  key: string;
+  title: string;
+  question: string;
+  status: "proposed" | "active" | "answered" | "dropped";
+  criteriaVersion: number;
+  budgetGpuHours: number | null;
+  conclusion: string | null;
+}
+
+export interface BoardCriteria {
+  epicId: string;
+  version: number;
+  bodyMd: string;
+  approvedAt: number | null;
+}
+
+export interface BoardVerdict {
+  passed: boolean;
+  failures: string[];
+  direction: BoardOutcome | null;
+  mean: number | null;
+  delta: number | null;
+}
+
+export interface BoardDecision {
+  id: string;
+  projectId: string;
+  epicId: string | null;
+  kind: BoardDecisionKind;
+  ticketIds: string[];
+  payload: {
+    question?: string;
+    options?: string[];
+    recommend?: string | null;
+    reason?: string | null;
+    version?: number;
+    mark?: number;
+    spentGpuHours?: number;
+    budgetGpuHours?: number | null;
+    verdicts?: Record<string, BoardVerdict | null>;
+  };
+  createdAt: number;
+}
+
+export type BoardTicketSummary = Pick<BoardTicket, "id" | "key" | "title" | "kind" | "status" | "outcome" | "conclusion" | "hypothesis" | "estMinutes" | "needsGpus" | "startedAt" | "sessionId" | "projectId" | "experimentId" | "result">;
+
+export interface BoardInboxCard {
+  decision: BoardDecision;
+  projectName: string | null;
+  epic: Pick<BoardEpic, "id" | "key" | "title" | "question"> | null;
+  criteria: BoardCriteria | null;
+  tickets: BoardTicketSummary[];
+}
+
+export interface BoardMachine {
+  id: string;
+  name: string;
+  backend: string;
+  gpuSlots: number;
+  own: boolean;
+}
+
+export interface BoardInbox {
+  decisions: BoardInboxCard[];
+  running: (BoardTicketSummary & { projectName: string | null })[];
+  machines: { machine: BoardMachine; inUse: number }[];
+}
+
+export interface ProjectBoard {
+  board: { projectId: string; enabled: boolean; priority: number; confidential: boolean; keyPrefix: string } | null;
+  epics: { epic: BoardEpic; criteria: BoardCriteria | null }[];
+  tickets: BoardTicket[];
+}
+
+export interface BoardEvent {
+  id: number;
+  at: number;
+  actor: string;
+  kind: string;
+  detail: Record<string, unknown>;
+}
+
+export interface BoardDecisionChoice {
+  selected?: string[];
+  option?: string;
+  text?: string;
+}
+
 export function timeAgo(ms: number): string {
   const s = Math.max(0, Math.floor((Date.now() - ms) / 1000));
   const format = new Intl.RelativeTimeFormat(getLocale(), { numeric: "always", style: "narrow" });
@@ -2361,6 +2489,27 @@ export function createApi(
       removeProject(projectId);
       return typeof body?.artifactsError === "string" ? body.artifactsError : undefined;
     });
+
+  const board = {
+    inbox: (signal?: AbortSignal) => get<BoardInbox>("/api/board/inbox", signal),
+    project: (projectId: string, signal?: AbortSignal) =>
+      get<ProjectBoard>(`/api/board/projects/${encodeURIComponent(projectId)}`, signal),
+    ticket: (ticketId: string, signal?: AbortSignal) =>
+      get<{ ticket: BoardTicket; events: BoardEvent[]; epic: BoardEpic | null }>(`/api/board/tickets/${encodeURIComponent(ticketId)}`, signal),
+    updateProject: (projectId: string, settings: { enabled?: boolean; confidential?: boolean; priority?: number }) =>
+      post<{ board: NonNullable<ProjectBoard["board"]> }>(`/api/board/projects/${encodeURIComponent(projectId)}`, settings),
+    resolve: (decisionId: string, choice: BoardDecisionChoice) =>
+      post<{ decision: BoardDecision }>(`/api/board/decisions/${encodeURIComponent(decisionId)}/resolve`, choice),
+    move: (ticketId: string, action: "approve" | "reject" | "accept" | "challenge" | "unblock" | "cancel", note?: string) =>
+      post<{ ticket: BoardTicket }>(`/api/board/tickets/${encodeURIComponent(ticketId)}/move`, { action, note }),
+    comment: (ticketId: string, text: string) =>
+      post<{ ok: true }>(`/api/board/tickets/${encodeURIComponent(ticketId)}/comment`, { text }),
+    machines: (signal?: AbortSignal) => get<{ machines: BoardMachine[] }>("/api/board/machines", signal).then((r) => r.machines),
+    addMachine: (machine: { name: string; backend: string; gpuSlots: number; own: boolean }) =>
+      post<{ machine: BoardMachine }>("/api/board/machines", machine),
+    removeMachine: (name: string) =>
+      writeResponse(`/api/board/machines/${encodeURIComponent(name)}`, { method: "DELETE" }).then((r) => json<{ ok: true }>(r)),
+  };
 
   const listExperiments = (projectId: string, signal?: AbortSignal) =>
     get<{ experiments: Experiment[] }>(`/api/projects/${projectId}/experiments`, signal).then(
@@ -3337,6 +3486,7 @@ export function createApi(
     getProjectStarterPrompts,
     deleteProject,
     listExperiments,
+    board,
     getSessionExperiments,
     deleteExperiment,
     setExperimentArchived,

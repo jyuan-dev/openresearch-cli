@@ -660,6 +660,7 @@ fn launch_admission(
 
 fn router(state: AppState, remote_auth: Option<RemoteAuth>, reach: up_remote::Reach) -> Router {
     let app = Router::new()
+        .merge(board::routes())
         .route("/api/health", get(health))
         .route("/api/search", get(search::search))
         .route("/api/file-manager", get(file_manager))
@@ -11045,6 +11046,7 @@ struct EventCursor {
     /// through the same diff the store changes do.
     update: Option<updates::UpdateStatus>,
     update_sampled_at: Option<std::time::Instant>,
+    board: Option<String>,
 }
 
 /// How often the event loop re-reads update status. The 500ms store cadence is
@@ -11146,6 +11148,12 @@ fn collect_events(cursor: &mut EventCursor) -> Result<Vec<Event>> {
     }
 
     let store = Store::open()?;
+    // CLI commands and agents change the board from other processes; one marker covers it all.
+    let board = store.board_change_marker()?;
+    if cursor.board.as_ref().is_some_and(|seen| *seen != board) {
+        out.push(json_event("board.updated", &json!({})));
+    }
+    cursor.board = Some(board);
     for project in store.list_local_projects()? {
         if cursor.projects.get(&project.id) != Some(&project.updated_at) {
             cursor
