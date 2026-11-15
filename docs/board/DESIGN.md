@@ -431,3 +431,16 @@ bundled skill 需要新增 `orx-board` 模块，并修改 `orx-experiment-tree`�
 3. **槽位是人工登记的**，和机器上的真实占用可能对不上（比如你手动跑的任务）。MVP 接受这一点；v2 可以用 `nvidia-smi`（本机和 SSH）做校准。
 4. **与上游合并**：`store.rs`（1.2 万行）、`up.rs`（1.35 万行）、`chat/mod.rs`（1.5 万行）是冲突热点，已经把改动压缩到注册点。合并节奏是每月一次。
 5. **自动升级**：等 MVP 能日常使用时，再关掉已安装 orx 的 autoUpdate，换成 fork 编译的版本（你已同意）。
+
+
+## 18. 切片 ② 实现记录（与上文不同或新增的地方）
+
+- **调度器位置**：`src/commands/up/board.rs`，它是 `up` 的子模块，所以能复用 New Chat 的建会话逻辑。为此把 `create_chat_session` 里的构造过程抽成了 `new_chat_session`，Executor 和 New Chat 走同一条路径，用的是你的 New Chat agent、模型和权限模式；ticket 指定了 harness 时用指定的。
+- **store 不能跨 await**：每一轮先在同步块里读写 store，再做异步的开会话和发消息。
+- **提问不占 GPU**：处于 waiting 的 ticket 只有在它的 run 还在跑时才占用槽位（对应 G2）。被回答后如果槽位已被别的 ticket 占了，会暂时超订，MVP 接受这一点。
+- **用户消息送达**：你在 CLI 或看板上的回答、质疑、评论，由调度器转发到该 ticket 的聊天（忙时排队），并记一条 `delivered` 事件，保证不重复发送。
+- **agent 检测期间不派发**：`orx up` 刚启动、agent 还在检测时，开会话会失败。所以这段时间跳过派发，避免把一次无意义的失败算作 repair。
+- **没有分支起点的 ticket**：简报要求 agent 用 `--baseline` 新建根节点，不再挂在项目当前的根节点上，因为那个根可能是另一张 ticket 的实验（e2e 中实际发生过）。
+- **取消或拒绝 ticket**：调度器会停掉它的聊天，并清空排队的消息。它已经启动的 run **还不会**自动取消，留待切片 ④ 处理。
+- **并发保护**：`move_ticket` 用“状态仍是读到的那个”作为更新条件，同一张 ticket 不会被派发两次。
+- **全局设置**：`orx board set checks '<json>'`、`orx board set max-sessions <n>`。

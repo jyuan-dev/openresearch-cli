@@ -55,6 +55,13 @@ pub enum BoardCommand {
         #[command(subcommand)]
         command: Option<MachineCommand>,
     },
+    /// Show or change a global board setting: `checks` (default result checks
+    /// as JSON, e.g. `{"minSeeds":3,"noiseFloor":0.01}`) or `maxSessions`.
+    Set {
+        key: BoardSettingKey,
+        /// The new value, as JSON. Omit to show the current one.
+        value: Option<String>,
+    },
     /// Answer a decision card from `orx board`.
     Decide {
         decision_id: String,
@@ -88,6 +95,21 @@ pub enum MachineCommand {
     Remove {
         name: String,
     },
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+pub enum BoardSettingKey {
+    Checks,
+    MaxSessions,
+}
+
+impl BoardSettingKey {
+    fn stored(self) -> &'static str {
+        match self {
+            Self::Checks => "checks",
+            Self::MaxSessions => "maxSessions",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -380,6 +402,27 @@ pub fn board(args: BoardArgs) -> Result<()> {
             Ok(())
         }
         Some(BoardCommand::Machines { command }) => machines(command, &actor, args.json),
+        Some(BoardCommand::Set { key, value }) => {
+            let store = Store::open()?;
+            if let Some(value) = value {
+                let value: Value = serde_json::from_str(&value)
+                    .with_context(|| format!("`{value}` is not JSON"))?;
+                match key {
+                    BoardSettingKey::Checks => {
+                        serde_json::from_value::<crate::board::checks::Checks>(value.clone())
+                            .context("not a set of result checks")?;
+                    }
+                    BoardSettingKey::MaxSessions => {
+                        if value.as_u64().is_none_or(|max| max == 0) {
+                            bail!("maxSessions is a whole number above 0.");
+                        }
+                    }
+                }
+                store.set_board_setting(key.stored(), &value, &actor)?;
+            }
+            println!("{}", store.board_setting(key.stored())?);
+            Ok(())
+        }
         Some(BoardCommand::Decide {
             decision_id,
             select,

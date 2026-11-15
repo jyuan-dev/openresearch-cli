@@ -7,6 +7,8 @@ use rusqlite::{params, Connection, OptionalExtension, Row};
 use serde_json::{json, Value};
 
 use super::{now_ms, Store};
+use crate::board::checks::{self, Checks};
+use crate::board::scheduler::{self, Candidate, MachineSlots};
 use crate::board::transitions::{self, TicketAction};
 use crate::board::{
     Actor, BoardEvent, BoardProject, Criteria, Decision, DecisionKind, DecisionStatus, Epic,
@@ -186,6 +188,25 @@ fn decision_from_row(row: &Row) -> rusqlite::Result<Decision> {
         created_at: row.get(8)?,
         resolved_at: row.get(9)?,
     })
+}
+
+fn detail_reason(detail: &Value) -> Value {
+    detail.get("reason").cloned().unwrap_or(Value::Null)
+}
+
+/// Adds `extra`'s keys to `payload`, merging one level of nested objects.
+fn merge_payload(payload: &mut Value, extra: Value) {
+    let (Some(target), Value::Object(extra)) = (payload.as_object_mut(), extra) else {
+        return;
+    };
+    for (key, value) in extra {
+        match (target.get_mut(&key), value) {
+            (Some(Value::Object(existing)), Value::Object(more)) => existing.extend(more),
+            (_, value) => {
+                target.insert(key, value);
+            }
+        }
+    }
 }
 
 fn proposer(actor: &Actor) -> ProposedBy {
@@ -701,52 +722,20 @@ impl Store {
         )?;
         // One approval card per batch, or per ticket when it was proposed alone.
         let card = new.batch_id.clone().unwrap_or_else(|| id.clone());
-        let dedupe = format!("approve:{}:{card}", new.project_id);
-        let open: Option<(String, String)> = tx
-            .query_row(
-                "SELECT id, ticket_ids_json FROM board_decisions WHERE dedupe_key = ?1 AND status = 'open'",
-                [&dedupe],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .optional()?;
-        match open {
-            Some((decision_id, ids)) => {
-                let mut ids: Vec<String> = serde_json::from_str(&ids)?;
-                ids.push(id.clone());
-                tx.execute(
-                    "UPDATE board_decisions SET ticket_ids_json = ?2 WHERE id = ?1",
-                    params![decision_id, serde_json::to_string(&ids)?],
-                )?;
-            }
-            None => {
-                // A closed card for this batch keeps its key; later proposals get a fresh one.
-                let dedupe = match tx
-                    .query_row(
-                        "SELECT 1 FROM board_decisions WHERE dedupe_key = ?1",
-                        [&dedupe],
-                        |_| Ok(()),
-                    )
-                    .optional()?
-                {
-                    Some(()) => format!("{dedupe}:{id}"),
-                    None => dedupe,
-                };
-                let epic_id = new
-                    .epic_id
-                    .as_ref()
-                    .map(|epic| self.require_epic(epic).map(|epic| epic.id))
-                    .transpose()?;
-                Self::insert_decision(
-                    &tx,
-                    &new.project_id,
-                    epic_id.as_deref(),
-                    DecisionKind::ApproveBatch,
-                    std::slice::from_ref(&id),
-                    &json!({"batch": new.batch_id}),
-                    &dedupe,
-                )?;
-            }
-        }
+        let epic_id = new
+            .epic_id
+            .as_ref()
+            .map(|epic| self.require_epic(epic).map(|epic| epic.id))
+            .transpose()?;
+        Self::add_to_card(
+            &tx,
+            &new.project_id,
+            epic_id.as_deref(),
+            DecisionKind::ApproveBatch,
+            &format!("approve:{}:{card}", new.project_id),
+            &id,
+            json!({"batch": new.batch_id}),
+        )?;
         tx.commit()?;
         self.require_ticket(&id)
     }
@@ -826,11 +815,11 @@ impl Store {
         }
         let tx = self.conn.unchecked_transaction()?;
         let now = now_ms();
-        tx.execute(
+        let changed = tx.execute(
             "UPDATE board_tickets SET status = ?2, updated_at = ?3,
                  started_at = CASE WHEN ?4 THEN ?3 ELSE started_at END,
                  finished_at = CASE WHEN ?5 THEN ?3 ELSE finished_at END
-             WHERE id = ?1",
+             WHERE id = ?1 AND status = ?6",
             params![
                 ticket.id,
                 to.as_str(),
@@ -842,35 +831,119 @@ impl Store {
                         | TicketStatus::Done
                         | TicketStatus::Rejected
                         | TicketStatus::Cancelled
-                ) && ticket.finished_at.is_none()
+                ) && ticket.finished_at.is_none(),
+                ticket.status.as_str()
             ],
         )?;
+        if changed == 0 {
+            bail!("{} changed while this was being decided; look at it again with `orx ticket show {}`.", ticket.key, ticket.key);
+        }
         Self::append_board_event(
             &tx,
             &ticket.project_id,
             &ticket.id,
             actor,
             action.name(),
-            &json!({"from": ticket.status, "to": to, "detail": detail}),
+            &json!({"from": ticket.status, "to": to, "detail": &detail}),
         )?;
-        Self::settle_approval_cards(&tx, &ticket.id, now)?;
+        if to == TicketStatus::Blocked {
+            Self::insert_decision(
+                &tx,
+                &ticket.project_id,
+                ticket.epic_id.as_deref(),
+                DecisionKind::Blocked,
+                std::slice::from_ref(&ticket.id),
+                &json!({"reason": detail_reason(&detail)}),
+                &format!("blocked:{}:{}", ticket.id, uuid::Uuid::new_v4()),
+            )?;
+        }
+        Self::settle_cards(&tx, &ticket.id, now)?;
         tx.commit()?;
         self.require_ticket(&ticket.id)
     }
 
-    /// Closes approval cards whose tickets have all left `proposed`.
-    fn settle_approval_cards(conn: &Connection, ticket_id: &str, now: i64) -> Result<()> {
+    /// Puts `ticket_id` on the open card under `dedupe`, or opens one. A card
+    /// that already closed keeps its key, so a later ticket gets a fresh card.
+    fn add_to_card(
+        conn: &Connection,
+        project_id: &str,
+        epic_id: Option<&str>,
+        kind: DecisionKind,
+        dedupe: &str,
+        ticket_id: &str,
+        payload: Value,
+    ) -> Result<String> {
+        let open: Option<(String, String, String)> = conn
+            .query_row(
+                "SELECT id, ticket_ids_json, payload_json FROM board_decisions
+                 WHERE dedupe_key = ?1 AND status = 'open'",
+                [dedupe],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()?;
+        if let Some((decision_id, ids, existing)) = open {
+            let mut ids: Vec<String> = serde_json::from_str(&ids)?;
+            if !ids.iter().any(|id| id == ticket_id) {
+                ids.push(ticket_id.to_string());
+            }
+            let mut existing: Value = serde_json::from_str(&existing)?;
+            merge_payload(&mut existing, payload);
+            conn.execute(
+                "UPDATE board_decisions SET ticket_ids_json = ?2, payload_json = ?3 WHERE id = ?1",
+                params![
+                    decision_id,
+                    serde_json::to_string(&ids)?,
+                    existing.to_string()
+                ],
+            )?;
+            return Ok(decision_id);
+        }
+        let used = conn
+            .query_row(
+                "SELECT 1 FROM board_decisions WHERE dedupe_key = ?1",
+                [dedupe],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some();
+        let dedupe = if used {
+            format!("{dedupe}:{}", uuid::Uuid::new_v4())
+        } else {
+            dedupe.to_string()
+        };
+        Self::insert_decision(
+            conn,
+            project_id,
+            epic_id,
+            kind,
+            &[ticket_id.to_string()],
+            &payload,
+            &dedupe,
+        )
+    }
+
+    /// Resolves open cards about `ticket_id` once none of their tickets still
+    /// waits in the status the card decides on.
+    fn settle_cards(conn: &Connection, ticket_id: &str, now: i64) -> Result<()> {
         let mut statement = conn.prepare(
-            "SELECT d.id, d.ticket_ids_json FROM board_decisions d, json_each(d.ticket_ids_json) j
-             WHERE d.kind = 'approve_batch' AND d.status = 'open' AND j.value = ?1",
+            "SELECT d.id, d.kind, d.ticket_ids_json FROM board_decisions d, json_each(d.ticket_ids_json) j
+             WHERE d.status = 'open' AND j.value = ?1",
         )?;
-        let cards: Vec<(String, String)> = statement
-            .query_map([ticket_id], |row| Ok((row.get(0)?, row.get(1)?)))?
+        let cards: Vec<(String, String, String)> = statement
+            .query_map([ticket_id], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })?
             .collect::<rusqlite::Result<_>>()?;
-        for (card, ids) in cards {
+        for (card, kind, ids) in cards {
+            let waiting_in = match DecisionKind::parse(&kind)? {
+                DecisionKind::ApproveBatch => TicketStatus::Proposed,
+                DecisionKind::AcceptBatch | DecisionKind::AcceptOne => TicketStatus::Review,
+                DecisionKind::Question => TicketStatus::Waiting,
+                DecisionKind::Blocked => TicketStatus::Blocked,
+                _ => continue,
+            };
             let ids: Vec<String> = serde_json::from_str(&ids)?;
-            let mut approved = Vec::new();
-            let mut declined = Vec::new();
+            let mut outcome = serde_json::Map::new();
             let mut pending = false;
             for id in &ids {
                 let status: String = conn.query_row(
@@ -878,24 +951,24 @@ impl Store {
                     [id],
                     |row| row.get(0),
                 )?;
-                match status.as_str() {
-                    "proposed" => pending = true,
-                    "rejected" | "cancelled" => declined.push(id.clone()),
-                    _ => approved.push(id.clone()),
-                }
+                pending |= status == waiting_in.as_str();
+                outcome.insert(id.clone(), Value::String(status));
             }
             if !pending {
                 conn.execute(
-                    "UPDATE board_decisions SET status = 'resolved', resolved_at = ?2, resolution_json = ?3
+                    "UPDATE board_decisions SET status = 'resolved', resolved_at = ?2,
+                         resolution_json = COALESCE(resolution_json, ?3)
                      WHERE id = ?1",
-                    params![card, now, json!({"approved": approved, "declined": declined}).to_string()],
+                    params![card, now, json!({"tickets": outcome}).to_string()],
                 )?;
             }
         }
         Ok(())
     }
 
-    /// The executor hands its result in: the ticket goes to review with its outcome.
+    /// The executor hands its result in. The board checks it against the
+    /// epic's criteria and puts it on the batch acceptance card when it
+    /// passes, or on a card of its own with the reasons when it does not.
     pub fn report_ticket(
         &self,
         id_or_key: &str,
@@ -906,6 +979,10 @@ impl Store {
     ) -> Result<Ticket> {
         if conclusion.trim().is_empty() {
             bail!("A report needs a conclusion: one or two sentences on what the result shows.");
+        }
+        let before = self.require_ticket(id_or_key)?;
+        if before.kind == TicketKind::Experiment && result.is_none() {
+            bail!("{} is an experiment: report its numbers with `--result-file` (metric, per-seed values, baseline) so they can be checked.", before.key);
         }
         let ticket = self.move_ticket(
             id_or_key,
@@ -918,7 +995,112 @@ impl Store {
              WHERE id = ?1",
             params![ticket.id, outcome.as_str(), conclusion.trim(), result.map(Value::to_string)],
         )?;
+        self.route_review(&self.require_ticket(&ticket.id)?)
+    }
+
+    fn route_review(&self, ticket: &Ticket) -> Result<Ticket> {
+        let outcome = ticket
+            .outcome
+            .ok_or_else(|| anyhow!("{} reached review without an outcome", ticket.key))?;
+        let epic = ticket
+            .epic_id
+            .as_deref()
+            .map(|id| self.require_epic(id))
+            .transpose()?;
+        let rules = epic
+            .as_ref()
+            .map(|epic| epic.rules.clone())
+            .unwrap_or_default();
+        let overrides = match &epic {
+            Some(epic) if epic.criteria_version > 0 => self
+                .criteria(&epic.id, epic.criteria_version)?
+                .map(|criteria| criteria.checks)
+                .unwrap_or(Value::Null),
+            _ => Value::Null,
+        };
+        let checks = Checks::merged(&self.board_setting("checks")?, &overrides);
+        let verdict = match (&ticket.kind, &ticket.result) {
+            (TicketKind::Experiment, Some(result)) => {
+                Some(checks::evaluate(&checks, result, outcome))
+            }
+            _ => None,
+        };
+        let passed = verdict.as_ref().is_some_and(|verdict| verdict.passed);
+        let batchable = passed
+            && (outcome != Outcome::Refutes
+                || (rules.negative_in_batch && !ticket.core_hypothesis));
+        let tx = self.conn.unchecked_transaction()?;
+        Self::append_board_event(
+            &tx,
+            &ticket.project_id,
+            &ticket.id,
+            &Actor::System(None),
+            "checked",
+            &json!({"verdict": verdict, "batchable": batchable}),
+        )?;
+        let scope = ticket
+            .epic_id
+            .clone()
+            .unwrap_or_else(|| ticket.project_id.clone());
+        let payload = json!({"verdicts": {ticket.id.clone(): verdict}});
+        if !(batchable && rules.auto_done) {
+            if batchable {
+                Self::add_to_card(
+                    &tx,
+                    &ticket.project_id,
+                    ticket.epic_id.as_deref(),
+                    DecisionKind::AcceptBatch,
+                    &format!("accept:{scope}"),
+                    &ticket.id,
+                    payload,
+                )?;
+            } else {
+                Self::insert_decision(
+                    &tx,
+                    &ticket.project_id,
+                    ticket.epic_id.as_deref(),
+                    DecisionKind::AcceptOne,
+                    std::slice::from_ref(&ticket.id),
+                    &payload,
+                    &format!("accept-one:{}:{}", ticket.id, uuid::Uuid::new_v4()),
+                )?;
+            }
+        }
+        tx.commit()?;
+        if batchable && rules.auto_done {
+            return self.move_ticket(
+                &ticket.id,
+                TicketAction::Accept,
+                &Actor::System(Some("auto_done".into())),
+                json!({"verdict": verdict}),
+            );
+        }
         self.require_ticket(&ticket.id)
+    }
+
+    /// A global board setting, as JSON; `null` when unset.
+    pub fn board_setting(&self, key: &str) -> Result<Value> {
+        let text: Option<String> = self
+            .conn
+            .query_row("SELECT v FROM board_settings WHERE k = ?1", [key], |row| {
+                row.get(0)
+            })
+            .optional()?;
+        text.map(|text| {
+            serde_json::from_str(&text)
+                .with_context(|| format!("board setting `{key}` is not JSON"))
+        })
+        .transpose()
+        .map(|value| value.unwrap_or(Value::Null))
+    }
+
+    pub fn set_board_setting(&self, key: &str, value: &Value, actor: &Actor) -> Result<()> {
+        require_user(actor, "change board settings")?;
+        self.conn.execute(
+            "INSERT INTO board_settings (k, v) VALUES (?1, ?2) ON CONFLICT(k) DO UPDATE SET v = ?2",
+            params![key, value.to_string()],
+        )?;
+        Ok(())
     }
 
     /// The executor asks the user something; only this ticket waits for the answer.
@@ -1082,14 +1264,7 @@ impl Store {
         }
         match decision.kind {
             DecisionKind::ApproveBatch => {
-                let selected = choice.selected.clone().unwrap_or_else(|| decision.ticket_ids.clone());
-                let selected: Vec<String> = selected
-                    .iter()
-                    .map(|key| self.require_ticket(key).map(|ticket| ticket.id))
-                    .collect::<Result<_>>()?;
-                if let Some(stray) = selected.iter().find(|id| !decision.ticket_ids.contains(id)) {
-                    bail!("Ticket {stray} is not on this card.");
-                }
+                let selected = self.card_selection(&decision, choice)?;
                 // Check every selected ticket first so one gap does not leave half a batch approved.
                 for ticket_id in &selected {
                     let ticket = self.require_ticket(ticket_id)?;
@@ -1123,7 +1298,54 @@ impl Store {
                 for ticket_id in &decision.ticket_ids {
                     self.move_ticket(ticket_id, TicketAction::Answer, actor, json!({"decision": decision.id, "answer": answer}))?;
                 }
-                self.close_decision(&decision, choice)?;
+            }
+            DecisionKind::AcceptBatch => {
+                let selected = self.card_selection(&decision, choice)?;
+                for ticket_id in &decision.ticket_ids {
+                    let ticket = self.require_ticket(ticket_id)?;
+                    if ticket.status != TicketStatus::Review {
+                        continue;
+                    }
+                    if selected.contains(ticket_id) {
+                        self.move_ticket(ticket_id, TicketAction::Accept, actor, json!({"decision": decision.id}))?;
+                    } else {
+                        // Unticked results get a card of their own to accept or dispute.
+                        Self::insert_decision(
+                            &self.conn,
+                            &ticket.project_id,
+                            ticket.epic_id.as_deref(),
+                            DecisionKind::AcceptOne,
+                            std::slice::from_ref(ticket_id),
+                            &json!({"verdicts": {ticket_id.clone(): decision.payload["verdicts"][ticket_id]}, "unticked": true}),
+                            &format!("accept-one:{ticket_id}:{}", uuid::Uuid::new_v4()),
+                        )?;
+                    }
+                }
+            }
+            DecisionKind::AcceptOne => {
+                let (action, detail) = match choice.option.as_deref() {
+                    Some("accept") => (TicketAction::Accept, json!({"decision": decision.id})),
+                    Some("challenge") => {
+                        let note = choice.text.clone().filter(|text| !text.trim().is_empty()).ok_or_else(|| {
+                            anyhow!("Say what to look at again: `--text \"…\"`.")
+                        })?;
+                        (TicketAction::Challenge, json!({"decision": decision.id, "note": note}))
+                    }
+                    _ => bail!("Choose `--option accept` or `--option challenge --text \"…\"`."),
+                };
+                for ticket_id in &decision.ticket_ids {
+                    self.move_ticket(ticket_id, action, actor, detail.clone())?;
+                }
+            }
+            DecisionKind::Blocked => {
+                let action = match choice.option.as_deref() {
+                    Some("unblock") => TicketAction::Unblock,
+                    Some("reject") => TicketAction::Reject,
+                    _ => bail!("Choose `--option unblock` to send it back to ready, or `--option reject`."),
+                };
+                for ticket_id in &decision.ticket_ids {
+                    self.move_ticket(ticket_id, action, actor, json!({"decision": decision.id, "note": choice.text}))?;
+                }
             }
             DecisionKind::ApproveCriteria => {
                 let version = decision.payload["version"]
@@ -1137,13 +1359,32 @@ impl Store {
             }
             other => bail!("`{other}` cards are not decided from the CLI yet; open the board in the dashboard."),
         }
+        self.record_choice(&decision, choice)?;
         self.require_decision(&decision.id)
     }
 
-    fn close_decision(&self, decision: &Decision, choice: &DecisionChoice) -> Result<()> {
+    /// The tickets a batch card's choice selects: all of them unless `--select` narrowed it.
+    fn card_selection(&self, decision: &Decision, choice: &DecisionChoice) -> Result<Vec<String>> {
+        let selected = choice
+            .selected
+            .clone()
+            .unwrap_or_else(|| decision.ticket_ids.clone());
+        let selected: Vec<String> = selected
+            .iter()
+            .map(|key| self.require_ticket(key).map(|ticket| ticket.id))
+            .collect::<Result<_>>()?;
+        if let Some(stray) = selected.iter().find(|id| !decision.ticket_ids.contains(id)) {
+            bail!("Ticket {stray} is not on this card.");
+        }
+        Ok(selected)
+    }
+
+    /// Stores what the user chose; moving the tickets may already have settled the card.
+    fn record_choice(&self, decision: &Decision, choice: &DecisionChoice) -> Result<()> {
         self.conn.execute(
-            "UPDATE board_decisions SET status = 'resolved', resolved_at = ?2, resolution_json = ?3
-             WHERE id = ?1 AND status = 'open'",
+            "UPDATE board_decisions SET status = 'resolved', resolved_at = COALESCE(resolved_at, ?2),
+                 resolution_json = ?3
+             WHERE id = ?1",
             params![
                 decision.id,
                 now_ms(),
@@ -1152,6 +1393,387 @@ impl Store {
             ],
         )?;
         Ok(())
+    }
+
+    /// Whether the board has work in flight or waiting to start: `orx up` must stay up for it.
+    pub fn board_has_live_work(&self) -> Result<bool> {
+        Ok(self.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM board_tickets t JOIN board_projects p ON p.project_id = t.project_id
+                           WHERE p.enabled = 1 AND t.status IN ('ready', 'running'))",
+            [],
+            |row| row.get(0),
+        )?)
+    }
+
+    pub fn tickets_in(&self, statuses: &[TicketStatus]) -> Result<Vec<Ticket>> {
+        let words: Vec<&str> = statuses.iter().map(|status| status.as_str()).collect();
+        let mut statement = self.conn.prepare(&format!(
+            "SELECT {TICKET_COLUMNS} FROM board_tickets
+             WHERE status IN (SELECT value FROM json_each(?1)) ORDER BY created_at"
+        ))?;
+        let tickets = statement
+            .query_map([serde_json::to_string(&words)?], ticket_from_row)?
+            .collect::<rusqlite::Result<_>>()?;
+        Ok(tickets)
+    }
+
+    /// GPU hours an epic's experiments have used: each run's time times its ticket's GPUs.
+    pub fn epic_gpu_hours(&self, epic_id: &str) -> Result<f64> {
+        let now = now_ms();
+        let mut statement = self.conn.prepare(
+            "SELECT r.created_at, COALESCE(r.ended_at, ?2), t.needs_gpus
+             FROM runs r JOIN board_tickets t ON t.experiment_id = r.experiment_id
+             WHERE t.epic_id = ?1",
+        )?;
+        let runs: Vec<(i64, i64, i64)> = statement
+            .query_map(params![epic_id, now], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })?
+            .collect::<rusqlite::Result<_>>()?;
+        Ok(scheduler::gpu_hours(&runs))
+    }
+
+    /// Ready tickets on enabled boards whose epic is active (or that have no epic).
+    pub fn dispatch_candidates(&self) -> Result<Vec<Candidate>> {
+        let now = now_ms();
+        let mut statement = self.conn.prepare(
+            "SELECT t.id, p.priority, COALESCE(e.priority, 100), t.priority, t.created_at,
+                    t.needs_gpus, p.confidential, t.epic_id, e.budget_gpu_hours, e.budget_deadline_ms,
+                    EXISTS(SELECT 1 FROM board_relations r JOIN board_tickets d ON d.id = r.to_id
+                           WHERE r.from_id = t.id AND r.kind = 'blocked_by' AND d.status != 'done')
+             FROM board_tickets t
+             JOIN board_projects p ON p.project_id = t.project_id AND p.enabled = 1
+             LEFT JOIN board_epics e ON e.id = t.epic_id
+             WHERE t.status = 'ready' AND (t.epic_id IS NULL OR e.status = 'active')",
+        )?;
+        // A candidate with its epic's id, GPU-hour budget and deadline.
+        type Row = (Candidate, Option<String>, Option<f64>, Option<i64>);
+        let rows: Vec<Row> = statement
+            .query_map([], |row| {
+                Ok((
+                    Candidate {
+                        ticket_id: row.get(0)?,
+                        project_priority: row.get(1)?,
+                        epic_priority: row.get(2)?,
+                        priority: row.get(3)?,
+                        created_at: row.get(4)?,
+                        needs_gpus: row.get(5)?,
+                        confidential: row.get(6)?,
+                        waiting_on_dependency: row.get(10)?,
+                        out_of_budget: false,
+                    },
+                    row.get(7)?,
+                    row.get(8)?,
+                    row.get(9)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<_>>()?;
+        rows.into_iter()
+            .map(|(mut candidate, epic, budget, deadline)| {
+                let spent = match (&epic, budget) {
+                    (Some(epic), Some(_)) => self.epic_gpu_hours(epic)?,
+                    _ => 0.0,
+                };
+                candidate.out_of_budget = scheduler::budget_marks(spent, budget).contains(&100)
+                    || deadline.is_some_and(|deadline| deadline <= now);
+                Ok(candidate)
+            })
+            .collect()
+    }
+
+    /// GPU slots per machine. A ticket waiting on the user holds its slot only
+    /// while one of its runs is still going, so a question never idles a GPU.
+    pub fn machine_slots(&self) -> Result<Vec<MachineSlots>> {
+        let mut statement = self.conn.prepare(
+            "SELECT m.id, m.gpu_slots, m.own,
+                    COALESCE((SELECT SUM(t.needs_gpus) FROM board_tickets t
+                              WHERE t.machine_id = m.id AND (t.status = 'running'
+                                 OR (t.status = 'waiting' AND EXISTS(
+                                     SELECT 1 FROM runs r WHERE r.experiment_id = t.experiment_id
+                                     AND r.ended_at IS NULL)))), 0)
+             FROM board_machines m WHERE m.enabled = 1",
+        )?;
+        let slots = statement
+            .query_map([], |row| {
+                Ok(MachineSlots {
+                    machine_id: row.get(0)?,
+                    gpu_slots: row.get(1)?,
+                    own: row.get(2)?,
+                    in_use: row.get(3)?,
+                })
+            })?
+            .collect::<rusqlite::Result<_>>()?;
+        Ok(slots)
+    }
+
+    pub fn machine(&self, id: &str) -> Result<Option<Machine>> {
+        Ok(self
+            .list_machines()?
+            .into_iter()
+            .find(|machine| machine.id == id))
+    }
+
+    /// Starts a ready ticket on `machine_id` for the scheduler.
+    pub fn dispatch_ticket(&self, ticket_id: &str, machine_id: Option<&str>) -> Result<Ticket> {
+        let ticket = self.move_ticket(
+            ticket_id,
+            TicketAction::Dispatch,
+            &Actor::System(None),
+            json!({"machine": machine_id}),
+        )?;
+        self.conn.execute(
+            "UPDATE board_tickets SET machine_id = ?2, slot_lease_at = ?3 WHERE id = ?1",
+            params![ticket.id, machine_id, now_ms()],
+        )?;
+        self.require_ticket(&ticket.id)
+    }
+
+    pub fn bind_ticket_session(&self, ticket_id: &str, session_id: &str) -> Result<()> {
+        let ticket = self.require_ticket(ticket_id)?;
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute(
+            "UPDATE board_tickets SET session_id = ?2, updated_at = ?3 WHERE id = ?1",
+            params![ticket.id, session_id, now_ms()],
+        )?;
+        Self::append_board_event(
+            &tx,
+            &ticket.project_id,
+            &ticket.id,
+            &Actor::System(None),
+            "session",
+            &json!({"sessionId": session_id}),
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// The scheduler gives a dispatched ticket back after a failed start,
+    /// blocking it once it has failed `repair_cap` times.
+    pub fn requeue_ticket(&self, ticket_id: &str, reason: &str) -> Result<Ticket> {
+        let ticket = self.require_ticket(ticket_id)?;
+        let cap = ticket
+            .epic_id
+            .as_deref()
+            .map(|epic| self.require_epic(epic).map(|epic| epic.rules.repair_cap))
+            .transpose()?
+            .unwrap_or(EpicRules::default().repair_cap);
+        self.conn.execute(
+            "UPDATE board_tickets SET repair_count = repair_count + 1, session_id = NULL,
+                 machine_id = NULL, slot_lease_at = NULL WHERE id = ?1",
+            [&ticket.id],
+        )?;
+        let action = if ticket.repair_count + 1 >= i64::from(cap) {
+            TicketAction::Block
+        } else {
+            TicketAction::Requeue
+        };
+        self.move_ticket(
+            &ticket.id,
+            action,
+            &Actor::System(None),
+            json!({"reason": reason}),
+        )
+    }
+
+    pub fn ticket_for_session(&self, session_id: &str) -> Result<Option<Ticket>> {
+        Ok(self
+            .conn
+            .query_row(
+                &format!(
+                    "SELECT {TICKET_COLUMNS} FROM board_tickets WHERE session_id = ?1
+                          ORDER BY updated_at DESC LIMIT 1"
+                ),
+                [session_id],
+                ticket_from_row,
+            )
+            .optional()?)
+    }
+
+    pub fn ticket_for_experiment(&self, experiment_id: &str) -> Result<Option<Ticket>> {
+        Ok(self
+            .conn
+            .query_row(
+                &format!("SELECT {TICKET_COLUMNS} FROM board_tickets WHERE experiment_id = ?1"),
+                [experiment_id],
+                ticket_from_row,
+            )
+            .optional()?)
+    }
+
+    /// Ties the first experiment a ticket's chat creates to that ticket.
+    pub fn link_ticket_experiment(&self, session_id: &str, experiment_id: &str) -> Result<()> {
+        let Some(ticket) = self.ticket_for_session(session_id)? else {
+            return Ok(());
+        };
+        if ticket.kind != TicketKind::Experiment
+            || ticket.experiment_id.is_some()
+            || !matches!(ticket.status, TicketStatus::Running | TicketStatus::Waiting)
+        {
+            return Ok(());
+        }
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute(
+            "UPDATE board_tickets SET experiment_id = ?2, updated_at = ?3 WHERE id = ?1",
+            params![ticket.id, experiment_id, now_ms()],
+        )?;
+        Self::append_board_event(
+            &tx,
+            &ticket.project_id,
+            &ticket.id,
+            &Actor::Agent(session_id.into()),
+            "experiment",
+            &json!({"experimentId": experiment_id}),
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Logs that one of a ticket's runs ended. False when this run was already logged.
+    pub fn record_ticket_run_end(
+        &self,
+        ticket: &Ticket,
+        run_id: &str,
+        phase: &str,
+    ) -> Result<bool> {
+        let seen: bool = self.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM board_events WHERE subject_id = ?1 AND kind = 'run_ended'
+                           AND json_extract(detail_json, '$.runId') = ?2)",
+            params![ticket.id, run_id],
+            |row| row.get(0),
+        )?;
+        if seen {
+            return Ok(false);
+        }
+        Self::append_board_event(
+            &self.conn,
+            &ticket.project_id,
+            &ticket.id,
+            &Actor::System(None),
+            "run_ended",
+            &json!({"runId": run_id, "phase": phase}),
+        )?;
+        self.conn.execute(
+            "UPDATE board_tickets SET updated_at = ?2 WHERE id = ?1",
+            params![ticket.id, now_ms()],
+        )?;
+        Ok(true)
+    }
+
+    /// Logs `kind` on a ticket once; false when it was already logged.
+    pub fn note_ticket_once(&self, ticket: &Ticket, kind: &str, detail: &Value) -> Result<bool> {
+        let seen: bool = self.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM board_events WHERE subject_id = ?1 AND kind = ?2)",
+            params![ticket.id, kind],
+            |row| row.get(0),
+        )?;
+        if !seen {
+            Self::append_board_event(
+                &self.conn,
+                &ticket.project_id,
+                &ticket.id,
+                &Actor::System(None),
+                kind,
+                detail,
+            )?;
+        }
+        Ok(!seen)
+    }
+
+    /// Opens a budget card when an epic crosses 80 or 100 percent of its GPU hours.
+    pub fn check_epic_budget(&self, epic: &Epic) -> Result<()> {
+        let spent = self.epic_gpu_hours(&epic.id)?;
+        for mark in scheduler::budget_marks(spent, epic.budget_gpu_hours) {
+            Self::insert_decision(
+                &self.conn,
+                &epic.project_id,
+                Some(&epic.id),
+                DecisionKind::Budget,
+                &[],
+                &json!({"mark": mark, "spentGpuHours": spent, "budgetGpuHours": epic.budget_gpu_hours}),
+                &format!(
+                    "budget:{}:{mark}:{}",
+                    epic.id,
+                    epic.budget_gpu_hours.unwrap_or(0.0)
+                ),
+            )?;
+        }
+        Ok(())
+    }
+
+    pub fn active_epics(&self) -> Result<Vec<Epic>> {
+        let mut statement = self.conn.prepare(&format!(
+            "SELECT {EPIC_COLUMNS} FROM board_epics WHERE status = 'active' ORDER BY priority"
+        ))?;
+        let epics = statement
+            .query_map([], epic_from_row)?
+            .collect::<rusqlite::Result<_>>()?;
+        Ok(epics)
+    }
+
+    /// The user's answers, challenges and comments that have not reached the
+    /// ticket's chat yet, oldest first.
+    pub fn undelivered_ticket_messages(&self) -> Result<Vec<(BoardEvent, Ticket)>> {
+        let mut statement = self.conn.prepare(
+            "SELECT e.id FROM board_events e JOIN board_tickets t ON t.id = e.subject_id
+             WHERE e.actor = 'user' AND e.kind IN ('answer', 'challenge', 'comment')
+               AND t.session_id IS NOT NULL
+               AND NOT EXISTS(SELECT 1 FROM board_events d WHERE d.subject_id = e.subject_id
+                              AND d.kind = 'delivered' AND json_extract(d.detail_json, '$.eventId') = e.id)
+             ORDER BY e.id",
+        )?;
+        let ids: Vec<i64> = statement
+            .query_map([], |row| row.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        ids.into_iter()
+            .map(|id| {
+                let event = self.conn.query_row(
+                    "SELECT id, at, project_id, subject_id, actor, kind, detail_json FROM board_events WHERE id = ?1",
+                    [id],
+                    |row| {
+                        Ok(BoardEvent {
+                            id: row.get(0)?,
+                            at: row.get(1)?,
+                            project_id: row.get(2)?,
+                            subject_id: row.get(3)?,
+                            actor: row.get(4)?,
+                            kind: row.get(5)?,
+                            detail: json_column(row, 6)?.unwrap_or(Value::Null),
+                        })
+                    },
+                )?;
+                let ticket = self.require_ticket(&event.subject_id)?;
+                Ok((event, ticket))
+            })
+            .collect()
+    }
+
+    /// Cancelled or rejected tickets whose chat has not been stopped yet.
+    pub fn tickets_to_stop(&self) -> Result<Vec<Ticket>> {
+        let mut statement = self.conn.prepare(&format!(
+            "SELECT {TICKET_COLUMNS} FROM board_tickets t
+             WHERE t.status IN ('cancelled', 'rejected') AND t.session_id IS NOT NULL
+               AND NOT EXISTS(SELECT 1 FROM board_events e WHERE e.subject_id = t.id AND e.kind = 'chat_stopped')"
+        ))?;
+        let tickets = statement
+            .query_map([], ticket_from_row)?
+            .collect::<rusqlite::Result<_>>()?;
+        Ok(tickets)
+    }
+
+    pub fn mark_ticket_message_delivered(
+        &self,
+        ticket: &Ticket,
+        event_id: i64,
+        session_id: &str,
+    ) -> Result<()> {
+        Self::append_board_event(
+            &self.conn,
+            &ticket.project_id,
+            &ticket.id,
+            &Actor::System(None),
+            "delivered",
+            &json!({"eventId": event_id, "sessionId": session_id}),
+        )
     }
 
     pub fn board_events(&self, subject_id: &str) -> Result<Vec<BoardEvent>> {
@@ -1276,6 +1898,7 @@ mod tests {
                     .into_owned(),
                 run_command: None,
                 paper_id: None,
+                icon: None,
                 created_at: 1,
                 updated_at: 1,
             })
@@ -1697,5 +2320,360 @@ mod tests {
         assert!(store.board_project(&id).unwrap().is_none());
         assert!(store.list_tickets(&id).unwrap().is_empty());
         assert!(store.open_decisions(Some(&id)).unwrap().is_empty());
+    }
+
+    fn board_with_epic(name: &str) -> (Store, String, Epic) {
+        let store = store();
+        let id = project(&store, name);
+        store
+            .update_board_project(
+                &id,
+                &BoardSettingsUpdate {
+                    enabled: Some(true),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let epic = active_epic(&store, &id);
+        (store, id, epic)
+    }
+
+    fn approved(store: &Store, project_id: &str, epic: &Epic, title: &str) -> Ticket {
+        let ticket = experiment(store, project_id, epic, title, None);
+        store
+            .move_ticket(
+                &ticket.key,
+                TicketAction::Approve,
+                &Actor::User,
+                Value::Null,
+            )
+            .unwrap()
+    }
+
+    fn running(store: &Store, project_id: &str, epic: &Epic, title: &str) -> Ticket {
+        let ticket = approved(store, project_id, epic, title);
+        store.dispatch_ticket(&ticket.id, None).unwrap()
+    }
+
+    fn cards(store: &Store, project_id: &str, kind: DecisionKind) -> Vec<Decision> {
+        store
+            .open_decisions(Some(project_id))
+            .unwrap()
+            .into_iter()
+            .filter(|decision| decision.kind == kind)
+            .collect()
+    }
+
+    #[test]
+    fn the_scheduler_sees_only_ready_tickets_on_enabled_boards_and_counts_held_slots() {
+        let (store, id, epic) = board_with_epic("Slot JEPA");
+        let machine = store.upsert_machine("ws", "local", 2, true).unwrap();
+        let first = approved(&store, &id, &epic, "lr 1e-4");
+        let _second = approved(&store, &id, &epic, "lr 3e-4");
+        experiment(&store, &id, &epic, "still proposed", None);
+        assert!(store.board_has_live_work().unwrap());
+        let candidates = store.dispatch_candidates().unwrap();
+        assert_eq!(candidates.len(), 2);
+        assert!(candidates
+            .iter()
+            .all(|c| c.confidential && c.needs_gpus == 1 && !c.out_of_budget));
+
+        store.dispatch_ticket(&first.id, Some(&machine.id)).unwrap();
+        let slots = store.machine_slots().unwrap();
+        assert_eq!((slots[0].gpu_slots, slots[0].in_use), (2, 1));
+        // The same ticket cannot be dispatched twice.
+        assert!(store.dispatch_ticket(&first.id, Some(&machine.id)).is_err());
+
+        store
+            .update_board_project(
+                &id,
+                &BoardSettingsUpdate {
+                    enabled: Some(false),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert!(store.dispatch_candidates().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_dependency_holds_a_ticket_until_the_other_is_done() {
+        let (store, id, epic) = board_with_epic("Slot JEPA");
+        let first = approved(&store, &id, &epic, "probe");
+        let second = approved(&store, &id, &epic, "follow-up");
+        store
+            .conn
+            .execute(
+                "INSERT INTO board_relations (from_id, to_id, kind, created_at) VALUES (?1, ?2, 'blocked_by', 0)",
+                params![second.id, first.id],
+            )
+            .unwrap();
+        let waiting: Vec<bool> = store
+            .dispatch_candidates()
+            .unwrap()
+            .iter()
+            .map(|c| c.waiting_on_dependency)
+            .collect();
+        assert_eq!(waiting, [false, true]);
+    }
+
+    #[test]
+    fn a_ticket_that_keeps_failing_to_start_is_blocked_with_a_card() {
+        let (store, id, epic) = board_with_epic("Slot JEPA");
+        let ticket = approved(&store, &id, &epic, "lr 1e-4");
+        for attempt in 1..=3 {
+            store.dispatch_ticket(&ticket.id, None).unwrap();
+            let after = store
+                .requeue_ticket(&ticket.id, "agent not signed in")
+                .unwrap();
+            let expected = if attempt < 3 {
+                TicketStatus::Ready
+            } else {
+                TicketStatus::Blocked
+            };
+            assert_eq!(after.status, expected, "attempt {attempt}");
+            assert!(after.session_id.is_none() && after.machine_id.is_none());
+        }
+        let blocked = cards(&store, &id, DecisionKind::Blocked);
+        assert_eq!(blocked.len(), 1);
+        assert_eq!(blocked[0].payload["reason"], "agent not signed in");
+        store
+            .resolve_decision(
+                &blocked[0].id,
+                &DecisionChoice {
+                    option: Some("unblock".into()),
+                    ..Default::default()
+                },
+                &Actor::User,
+            )
+            .unwrap();
+        assert_eq!(
+            store.require_ticket(&ticket.key).unwrap().status,
+            TicketStatus::Ready
+        );
+        assert!(cards(&store, &id, DecisionKind::Blocked).is_empty());
+    }
+
+    #[test]
+    fn checked_results_share_a_batch_card_and_failing_or_core_refutations_stand_alone() {
+        let (store, id, epic) = board_with_epic("Slot JEPA");
+        store
+            .set_board_setting(
+                "checks",
+                &json!({"metric": "val_loss", "higherIsBetter": false, "noiseFloor": 0.01}),
+                &Actor::User,
+            )
+            .unwrap();
+        let good = running(&store, &id, &epic, "lr 3e-4");
+        let negative = running(&store, &id, &epic, "lr 1e-2");
+        let sloppy = running(&store, &id, &epic, "lr 1e-3");
+        let core = experiment(&store, &id, &epic, "no role head", None);
+        store
+            .conn
+            .execute(
+                "UPDATE board_tickets SET core_hypothesis = 1 WHERE id = ?1",
+                [&core.id],
+            )
+            .unwrap();
+        store
+            .move_ticket(&core.key, TicketAction::Approve, &Actor::User, Value::Null)
+            .unwrap();
+        store.dispatch_ticket(&core.id, None).unwrap();
+
+        let report = |ticket: &Ticket, outcome, values: Value| {
+            store
+                .report_ticket(
+                    &ticket.key,
+                    outcome,
+                    "see numbers",
+                    Some(&json!({"metric": "val_loss", "values": values, "baseline": 2.0})),
+                    &agent(),
+                )
+                .unwrap()
+        };
+        assert!(store
+            .report_ticket(&good.key, Outcome::Supports, "x", None, &agent())
+            .is_err());
+        report(&good, Outcome::Supports, json!([1.8, 1.82, 1.79]));
+        report(&negative, Outcome::Refutes, json!([2.3, 2.31, 2.29]));
+        report(&sloppy, Outcome::Supports, json!([1.9, null]));
+        report(&core, Outcome::Refutes, json!([2.3, 2.3, 2.3]));
+
+        let batch = cards(&store, &id, DecisionKind::AcceptBatch);
+        assert_eq!(batch.len(), 1);
+        assert_eq!(batch[0].ticket_ids, [good.id.clone(), negative.id.clone()]);
+        assert_eq!(batch[0].payload["verdicts"][&good.id]["passed"], true);
+        let alone: Vec<Vec<String>> = cards(&store, &id, DecisionKind::AcceptOne)
+            .into_iter()
+            .map(|d| d.ticket_ids)
+            .collect();
+        assert_eq!(alone, [vec![sloppy.id.clone()], vec![core.id.clone()]]);
+
+        // Unticking the negative result accepts the other and gives it a card of its own.
+        store
+            .resolve_decision(
+                &batch[0].id,
+                &DecisionChoice {
+                    selected: Some(vec![good.key.clone()]),
+                    ..Default::default()
+                },
+                &Actor::User,
+            )
+            .unwrap();
+        assert_eq!(
+            store.require_ticket(&good.key).unwrap().status,
+            TicketStatus::Done
+        );
+        assert_eq!(
+            store.require_ticket(&negative.key).unwrap().status,
+            TicketStatus::Review
+        );
+        let own = cards(&store, &id, DecisionKind::AcceptOne);
+        assert_eq!(own.len(), 3);
+        let negative_card = own
+            .iter()
+            .find(|d| d.ticket_ids == [negative.id.clone()])
+            .unwrap();
+        assert!(store
+            .resolve_decision(
+                &negative_card.id,
+                &DecisionChoice {
+                    option: Some("challenge".into()),
+                    ..Default::default()
+                },
+                &Actor::User
+            )
+            .is_err());
+        store
+            .resolve_decision(
+                &negative_card.id,
+                &DecisionChoice {
+                    option: Some("challenge".into()),
+                    text: Some("rerun with seed 4".into()),
+                    ..Default::default()
+                },
+                &Actor::User,
+            )
+            .unwrap();
+        assert_eq!(
+            store.require_ticket(&negative.key).unwrap().status,
+            TicketStatus::Running
+        );
+    }
+
+    #[test]
+    fn auto_done_accepts_passing_results_without_a_card() {
+        let (store, id, epic) = board_with_epic("Slot JEPA");
+        let rules = EpicRules {
+            auto_done: true,
+            ..EpicRules::default()
+        };
+        store
+            .set_epic_rules(&epic.id, &rules, &Actor::User)
+            .unwrap();
+        let ticket = running(&store, &id, &epic, "lr 3e-4");
+        let done = store
+            .report_ticket(
+                &ticket.key,
+                Outcome::Supports,
+                "faster",
+                Some(&json!({"values": [0.7, 0.71, 0.69], "baseline": 0.6})),
+                &agent(),
+            )
+            .unwrap();
+        assert_eq!(done.status, TicketStatus::Done);
+        assert!(cards(&store, &id, DecisionKind::AcceptBatch).is_empty());
+        let accept = store
+            .board_events(&ticket.id)
+            .unwrap()
+            .into_iter()
+            .find(|e| e.kind == "accept")
+            .unwrap();
+        assert_eq!(accept.actor, "system:auto_done");
+    }
+
+    #[test]
+    fn a_tickets_chat_links_its_first_experiment_and_each_run_end_is_logged_once() {
+        let (store, id, epic) = board_with_epic("Slot JEPA");
+        let ticket = running(&store, &id, &epic, "lr 3e-4");
+        store.bind_ticket_session(&ticket.id, "chat-7").unwrap();
+        assert_eq!(
+            store.ticket_for_session("chat-7").unwrap().unwrap().id,
+            ticket.id
+        );
+        store.link_ticket_experiment("chat-7", "exp-1").unwrap();
+        store.link_ticket_experiment("chat-7", "exp-2").unwrap();
+        store.link_ticket_experiment("chat-other", "exp-3").unwrap();
+        let linked = store.ticket_for_experiment("exp-1").unwrap().unwrap();
+        assert_eq!(linked.id, ticket.id);
+        assert!(store.ticket_for_experiment("exp-2").unwrap().is_none());
+        assert!(store
+            .record_ticket_run_end(&linked, "run-1", "done")
+            .unwrap());
+        assert!(!store
+            .record_ticket_run_end(&linked, "run-1", "done")
+            .unwrap());
+        assert!(store
+            .record_ticket_run_end(&linked, "run-2", "failed")
+            .unwrap());
+    }
+
+    #[test]
+    fn the_users_answers_and_comments_wait_for_delivery_and_cancelled_chats_for_a_stop() {
+        let (store, id, epic) = board_with_epic("Slot JEPA");
+        let ticket = running(&store, &id, &epic, "lr 3e-4");
+        store
+            .comment_on_ticket(&ticket.key, "before it had a chat", &Actor::User)
+            .unwrap();
+        assert!(store.undelivered_ticket_messages().unwrap().is_empty());
+        store.bind_ticket_session(&ticket.id, "chat-7").unwrap();
+        store
+            .comment_on_ticket(&ticket.key, "agent note", &agent())
+            .unwrap();
+        let question = store
+            .ask_on_ticket(
+                &ticket.key,
+                "Which split?",
+                &["val".into(), "test".into()],
+                Some("val"),
+                &agent(),
+            )
+            .unwrap();
+        store
+            .resolve_decision(
+                &question.id,
+                &DecisionChoice {
+                    option: Some("val".into()),
+                    ..Default::default()
+                },
+                &Actor::User,
+            )
+            .unwrap();
+        let pending = store.undelivered_ticket_messages().unwrap();
+        let kinds: Vec<&str> = pending
+            .iter()
+            .map(|(event, _)| event.kind.as_str())
+            .collect();
+        assert_eq!(
+            kinds,
+            ["comment", "answer"],
+            "the agent's own note is not sent back to it"
+        );
+        for (event, ticket) in &pending {
+            store
+                .mark_ticket_message_delivered(ticket, event.id, "chat-7")
+                .unwrap();
+        }
+        assert!(store.undelivered_ticket_messages().unwrap().is_empty());
+
+        assert!(store.tickets_to_stop().unwrap().is_empty());
+        let cancelled = store
+            .move_ticket(&ticket.key, TicketAction::Cancel, &Actor::User, Value::Null)
+            .unwrap();
+        assert_eq!(store.tickets_to_stop().unwrap().len(), 1);
+        store
+            .note_ticket_once(&cancelled, "chat_stopped", &json!({}))
+            .unwrap();
+        assert!(store.tickets_to_stop().unwrap().is_empty());
     }
 }

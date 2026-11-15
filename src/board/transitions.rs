@@ -25,7 +25,6 @@ pub enum TicketAction {
     /// The user clears a block, sending the ticket back to `ready`.
     Unblock,
     /// The scheduler hands a dispatched ticket back, as when its start failed.
-    #[cfg_attr(not(test), expect(dead_code, reason = "the scheduler requeues"))]
     Requeue,
     Cancel,
 }

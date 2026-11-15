@@ -51,6 +51,7 @@ use crate::{browser, UpArgs};
 
 mod agent_tools;
 pub(crate) mod api_v2;
+mod board;
 pub(crate) mod compute_settings;
 mod harness_setup;
 pub(crate) mod model_feed;
@@ -248,6 +249,7 @@ pub async fn run(args: UpArgs) -> Result<()> {
         state.data_dir_move_in_progress.clone(),
         state.data_dir_gate.clone(),
     ));
+    board::spawn(state.clone(), engine.bus.subscribe());
     runtime.start();
     tokio::spawn(reclaim_orphaned_run_artifacts(
         state.data_dir_move_in_progress.clone(),
@@ -9865,31 +9867,17 @@ async fn chat_session_experiments(Path(id): Path<String>) -> ApiResult {
     Ok(Json(json!({ "experiments": experiments })))
 }
 
-async fn create_chat_session(
-    State(state): State<AppState>,
-    Json(mut req): Json<CreateChatSessionReq>,
-) -> ApiResult {
-    reject_if_moving(&state)?;
-    let _admission = state
-        .project_lifecycle
-        .admit(&req.project_id)
-        .ok_or_else(|| bad_request("project deletion is in progress"))?;
+/// The chat a New Chat request describes, with the user's saved New Chat
+/// settings filled in where the request leaves them out. Not yet stored.
+async fn new_chat_session(
+    state: &AppState,
+    mut req: CreateChatSessionReq,
+) -> std::result::Result<StoredChatSession, ApiError> {
     let store = Store::open()?;
-    let project = store
+    store
         .get_local_project(&req.project_id)?
         .ok_or_else(|| not_found("project"))?;
-    // A chat without a project gets one of its own, even when two drafts were
-    // opened on the same unused scratch project.
-    let _scratch_guard = if project.is_scratch() {
-        let guard = state.project_creation_lock.clone().lock_owned().await;
-        if !store.list_chat_sessions_by_project(&project.id)?.is_empty() {
-            req.project_id = local::projects::scratch_project(&store)?.id;
-        }
-        Some(guard)
-    } else {
-        None
-    };
-    let catalog = harnesses_payload(&state, &HarnessQuery::default()).await;
+    let catalog = harnesses_payload(state, &HarnessQuery::default()).await;
     if req.harness.is_none() {
         if let Some(profile) = req.profile.as_deref() {
             req.harness = Some(
@@ -9965,6 +9953,35 @@ async fn create_chat_session(
         created_at: now_ms(),
         updated_at: now_ms(),
     };
+    Ok(session)
+}
+
+async fn create_chat_session(
+    State(state): State<AppState>,
+    Json(mut req): Json<CreateChatSessionReq>,
+) -> ApiResult {
+    reject_if_moving(&state)?;
+    let _admission = state
+        .project_lifecycle
+        .admit(&req.project_id)
+        .ok_or_else(|| bad_request("project deletion is in progress"))?;
+    let store = Store::open()?;
+    let project = store
+        .get_local_project(&req.project_id)?
+        .ok_or_else(|| not_found("project"))?;
+    // A chat without a project gets one of its own, even when two drafts were
+    // opened on the same unused scratch project. The guard is held until the
+    // chat is stored.
+    let _scratch_guard = if project.is_scratch() {
+        let guard = state.project_creation_lock.clone().lock_owned().await;
+        if !store.list_chat_sessions_by_project(&project.id)?.is_empty() {
+            req.project_id = local::projects::scratch_project(&store)?.id;
+        }
+        Some(guard)
+    } else {
+        None
+    };
+    let session = new_chat_session(&state, req).await?;
     store.create_chat_session(&session)?;
     state.chat.emit_session(Some(session.clone())).await;
     Ok(Json(

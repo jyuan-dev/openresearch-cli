@@ -221,8 +221,11 @@ impl Api {
         self.store().pending_work(&working)
     }
 
+    /// Live board tickets keep a headless server up, as pending runs do.
     pub(super) async fn busy(&self) -> Result<bool> {
-        Ok(!self.pending_work().await?.is_empty() || self.sse_clients() != 0)
+        Ok(!self.pending_work().await?.is_empty()
+            || self.store().board_has_live_work()?
+            || self.sse_clients() != 0)
     }
 
     pub fn sse_clients(&self) -> usize {

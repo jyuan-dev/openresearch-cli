@@ -1,0 +1,309 @@
+//! The board's scheduler inside `orx up`: it starts ready tickets on free GPU
+//! slots, each in a chat of its own, notes when their runs end, and repairs
+//! tickets whose chat was lost across a restart.
+
+use std::time::Duration;
+
+use serde_json::json;
+use tokio::sync::broadcast;
+
+use super::{new_chat_session, AppState, CreateChatSessionReq};
+use crate::board::{brief, scheduler, Ticket, TicketStatus};
+use crate::engine::bus::RunEvent;
+use crate::error::{anyhow, Result};
+use crate::local::autonomy::Autonomy;
+use crate::local::chat::{OrxDisplay, OrxKind, OrxSource, TurnOverrides};
+use crate::store::{now_ms, Store};
+
+/// How long a dispatched ticket may sit without a chat before it is started again.
+const UNBOUND_GRACE_MS: i64 = 2 * 60 * 1000;
+const DEFAULT_MAX_SESSIONS: usize = 8;
+
+pub(super) fn spawn(state: AppState, mut runs: broadcast::Receiver<RunEvent>) {
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(crate::config::paced(Duration::from_secs(5)));
+        loop {
+            let mut ended = Vec::new();
+            tokio::select! {
+                event = runs.recv() => match event {
+                    Ok(RunEvent::Changed { run_id, phase, .. }) if phase.is_terminal() => {
+                        ended.push((run_id, phase.as_str().to_string()));
+                    }
+                    // A lagged receiver missed events; the reconcile pass below rereads the store.
+                    Err(broadcast::error::RecvError::Lagged(_)) => {}
+                    Err(broadcast::error::RecvError::Closed) => return,
+                    _ => continue,
+                },
+                _ = tick.tick() => {}
+            }
+            if state
+                .data_dir_move_in_progress
+                .load(std::sync::atomic::Ordering::SeqCst)
+            {
+                continue;
+            }
+            let _gate = state.data_dir_gate.lock().await;
+            if let Err(error) = pass(&state, &ended).await {
+                eprintln!("orx up: board scheduler: {error:#}");
+            }
+        }
+    });
+}
+
+async fn pass(state: &AppState, ended: &[(String, String)]) -> Result<()> {
+    // The store is not `Send`: every use of it finishes before the next await.
+    // While orx is still detecting agents, a start would fail for no real reason.
+    let agents_settling = agents_settling(state).await;
+    let (started, messages, stopping) = {
+        let store = Store::open()?;
+        for (run_id, phase) in ended {
+            note_run_end(&store, run_id, phase)?;
+        }
+        reconcile(&store)?;
+        for epic in store.active_epics()? {
+            store.check_epic_budget(&epic)?;
+        }
+        let messages = store.undelivered_ticket_messages()?;
+        let stopping = store.tickets_to_stop()?;
+        let started = if agents_settling {
+            Vec::new()
+        } else {
+            dispatch(&store)?
+        };
+        (started, messages, stopping)
+    };
+    for ticket in stopping {
+        let Some(session) = &ticket.session_id else {
+            continue;
+        };
+        // The user called the ticket off: its chat stops and drops anything queued.
+        if let Err(error) = state.chat.interrupt_by_user(session).await {
+            eprintln!("orx up: could not stop {}'s chat: {error:#}", ticket.key);
+            continue;
+        }
+        Store::open()?.note_ticket_once(&ticket, "chat_stopped", &json!({"sessionId": session}))?;
+    }
+    for (event, ticket) in messages {
+        if let Err(error) = deliver(state, &event, &ticket).await {
+            eprintln!(
+                "orx up: could not tell {}'s chat about the user's {}: {error:#}",
+                ticket.key, event.kind
+            );
+        }
+    }
+    for ticket in started {
+        if let Err(error) = start_executor(state, &ticket).await {
+            eprintln!("orx up: could not start {}: {error:#}", ticket.key);
+            Store::open()?
+                .requeue_ticket(&ticket.id, &format!("its chat could not start: {error}"))?;
+        }
+    }
+    Ok(())
+}
+
+/// Sends the user's answer, challenge or comment to the ticket's chat; queued if it is busy.
+async fn deliver(
+    state: &AppState,
+    event: &crate::board::BoardEvent,
+    ticket: &Ticket,
+) -> Result<()> {
+    let Some(session) = ticket.session_id.clone() else {
+        return Ok(());
+    };
+    if let Some(text) = brief::user_message(ticket, &event.kind, &event.detail) {
+        state
+            .chat
+            .send_message(
+                &session,
+                text.clone(),
+                TurnOverrides::default(),
+                Vec::new(),
+                Vec::new(),
+                Some(format!("ticket_{}_event_{}", ticket.id, event.id)),
+                Some(OrxDisplay {
+                    text,
+                    source: OrxSource {
+                        kind: OrxKind::Message,
+                        from: None,
+                        status: None,
+                    },
+                }),
+            )
+            .await?;
+    }
+    Store::open()?.mark_ticket_message_delivered(ticket, event.id, &session)
+}
+
+async fn agents_settling(state: &AppState) -> bool {
+    super::harnesses_payload(state, &super::HarnessQuery::default()).await["harnesses"]
+        .as_array()
+        .is_none_or(|harnesses| {
+            harnesses
+                .iter()
+                .any(|harness| harness["catalogPending"].as_bool() == Some(true))
+        })
+}
+
+fn note_run_end(store: &Store, run_id: &str, phase: &str) -> Result<()> {
+    let Some(run) = store.get_run(run_id)? else {
+        return Ok(());
+    };
+    if let Some(ticket) = store.ticket_for_experiment(&run.experiment_id)? {
+        store.record_ticket_run_end(&ticket, run_id, phase)?;
+    }
+    Ok(())
+}
+
+/// Brings running tickets back in line with their chats and runs.
+fn reconcile(store: &Store) -> Result<()> {
+    let now = now_ms();
+    for ticket in store.tickets_in(&[TicketStatus::Running, TicketStatus::Waiting])? {
+        if let Some(experiment) = &ticket.experiment_id {
+            if let Some(run) = store.latest_run_for_experiment(experiment)? {
+                if run.ended_at.is_some() {
+                    store.record_ticket_run_end(&ticket, &run.id, &run.status)?;
+                }
+            }
+        }
+        overrun(store, &ticket, now)?;
+        if ticket.status != TicketStatus::Running {
+            continue;
+        }
+        let lost = match &ticket.session_id {
+            Some(session) => store
+                .get_chat_session(session)?
+                .is_none()
+                .then_some("its chat was deleted"),
+            None => (now - ticket.started_at.unwrap_or(now) > UNBOUND_GRACE_MS)
+                .then_some("its chat never started"),
+        };
+        if let Some(reason) = lost {
+            store.requeue_ticket(&ticket.id, reason)?;
+        }
+    }
+    Ok(())
+}
+
+fn overrun(store: &Store, ticket: &Ticket, now: i64) -> Result<()> {
+    let (Some(started), Some(estimate)) = (ticket.started_at, ticket.est_minutes) else {
+        return Ok(());
+    };
+    let factor = ticket
+        .epic_id
+        .as_deref()
+        .and_then(|epic| store.epic(epic).ok().flatten())
+        .map(|epic| epic.rules.overrun_factor)
+        .unwrap_or(1.5);
+    let elapsed_min = (now - started) as f64 / 60_000.0;
+    if elapsed_min > estimate as f64 * factor {
+        store.note_ticket_once(
+            ticket,
+            "overrun",
+            &json!({"estimatedMinutes": estimate, "elapsedMinutes": elapsed_min.round(), "factor": factor}),
+        )?;
+    }
+    Ok(())
+}
+
+/// Moves the tickets the scheduler picks to running; their chats start after.
+fn dispatch(store: &Store) -> Result<Vec<Ticket>> {
+    let live = store
+        .tickets_in(&[TicketStatus::Running, TicketStatus::Waiting])?
+        .iter()
+        .filter(|ticket| ticket.session_id.is_some())
+        .count();
+    let max_sessions = store
+        .board_setting("maxSessions")?
+        .as_u64()
+        .map_or(DEFAULT_MAX_SESSIONS, |max| max as usize);
+    scheduler::plan(
+        &store.dispatch_candidates()?,
+        &store.machine_slots()?,
+        live,
+        max_sessions,
+    )
+    .into_iter()
+    .map(|start| store.dispatch_ticket(&start.ticket_id, start.machine_id.as_deref()))
+    .collect()
+}
+
+/// Opens the ticket's chat with the user's New Chat agent (or the ticket's own) and sends its task.
+async fn start_executor(state: &AppState, ticket: &Ticket) -> Result<()> {
+    let _admission = state
+        .project_lifecycle
+        .admit(&ticket.project_id)
+        .ok_or_else(|| anyhow!("its project is being deleted"))?;
+    let mut session = new_chat_session(
+        state,
+        CreateChatSessionReq {
+            profile: None,
+            project_id: ticket.project_id.clone(),
+            harness: ticket.harness.clone(),
+            model: None,
+            service_tier: None,
+            permission_mode: None,
+            plan_mode: false,
+            reasoning_level: None,
+            autonomy: Some(Autonomy::Agentic),
+        },
+    )
+    .await
+    .map_err(|error| anyhow!("{}", error.1))?;
+    session.title = Some(format!("{} · {}", ticket.key, ticket.title));
+    session.title_source = Some("user".into());
+    // Agentic: the ticket was approved, so its chat runs without asking before each launch.
+    session.autonomy = Some(Autonomy::Agentic.id().to_string());
+    let task = {
+        let store = Store::open()?;
+        store.create_chat_session(&session)?;
+        store.bind_ticket_session(&ticket.id, &session.id)?;
+        let epic = ticket
+            .epic_id
+            .as_deref()
+            .map(|id| store.require_epic(id))
+            .transpose()?;
+        let criteria = match &epic {
+            Some(epic) if epic.criteria_version > 0 => {
+                store.criteria(&epic.id, epic.criteria_version)?
+            }
+            _ => None,
+        };
+        let machine = ticket
+            .machine_id
+            .as_deref()
+            .map(|id| store.machine(id))
+            .transpose()?
+            .flatten();
+        brief::executor_task(ticket, epic.as_ref(), criteria.as_ref(), machine.as_ref())
+    };
+    state.chat.emit_session(Some(session.clone())).await;
+    let sent = state
+        .chat
+        .send_message(
+            &session.id,
+            task,
+            TurnOverrides::default(),
+            Vec::new(),
+            Vec::new(),
+            Some(format!("ticket_{}_{}", ticket.id, ticket.repair_count)),
+            Some(OrxDisplay {
+                text: format!("Ticket {}: {}", ticket.key, ticket.title),
+                source: OrxSource {
+                    kind: OrxKind::Task,
+                    from: None,
+                    status: None,
+                },
+            }),
+        )
+        .await;
+    if let Err(error) = sent {
+        if let Err(cleanup) = state.chat.delete_session(&session.id).await {
+            eprintln!(
+                "orx up: could not remove {}'s unstarted chat {}: {cleanup:#}",
+                ticket.key, session.id
+            );
+        }
+        return Err(error);
+    }
+    Ok(())
+}

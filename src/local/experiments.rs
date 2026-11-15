@@ -393,6 +393,9 @@ fn create_experiment_locked(
         archived: false,
     };
     store.create_local_experiment(&experiment)?;
+    if let Some(session) = &experiment.chat_session_id {
+        store.link_ticket_experiment(session, &experiment.id)?;
+    }
     Ok(experiment)
 }
 

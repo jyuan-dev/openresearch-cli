@@ -182,10 +182,6 @@ pub enum Actor {
     /// An agent chat, by session id.
     Agent(String),
     /// The board itself, optionally citing the epic rule that allowed it.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the scheduler acts as the board")
-    )]
     System(Option<String>),
 }
 
