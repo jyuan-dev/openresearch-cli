@@ -2334,5 +2334,8 @@
   "board_machine_backend": "محل اجرا",
   "board_machine_slots": "جایگاه‌های GPU",
   "board_machine_own": "ماشین خودم (برای پروژه‌های محرمانه مجاز است)",
-  "board_load_error": "تابلو بارگیری نشد: {message}"
+  "board_load_error": "تابلو بارگیری نشد: {message}",
+  "board_pin_label": "اجرا روی",
+  "board_pin_any": "هر دستگاهی (زمان‌بند انتخاب می‌کند)",
+  "board_pin_holds": "GPUها را روی {name} نگه داشته است"
 }

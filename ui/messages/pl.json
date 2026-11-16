@@ -2334,5 +2334,8 @@
   "board_machine_backend": "Gdzie działa",
   "board_machine_slots": "Sloty GPU",
   "board_machine_own": "Moja własna maszyna (dozwolona dla poufnych projektów)",
-  "board_load_error": "Nie udało się wczytać tablicy: {message}"
+  "board_load_error": "Nie udało się wczytać tablicy: {message}",
+  "board_pin_label": "Uruchamiaj na",
+  "board_pin_any": "Dowolna maszyna (wybiera harmonogram)",
+  "board_pin_holds": "Zajmuje GPU na {name}"
 }

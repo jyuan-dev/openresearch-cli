@@ -2334,5 +2334,8 @@
   "board_machine_backend": "Где запускать",
   "board_machine_slots": "Слоты GPU",
   "board_machine_own": "Моя машина (разрешена для конфиденциальных проектов)",
-  "board_load_error": "Не удалось загрузить доску: {message}"
+  "board_load_error": "Не удалось загрузить доску: {message}",
+  "board_pin_label": "Где запускать",
+  "board_pin_any": "Любая машина (выбирает планировщик)",
+  "board_pin_holds": "Занимает GPU на {name}"
 }

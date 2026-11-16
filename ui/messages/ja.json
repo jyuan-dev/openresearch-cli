@@ -2334,5 +2334,8 @@
   "board_machine_backend": "実行場所",
   "board_machine_slots": "GPU スロット",
   "board_machine_own": "自分のマシン（機密プロジェクトで使用可）",
-  "board_load_error": "ボードを読み込めませんでした: {message}"
+  "board_load_error": "ボードを読み込めませんでした: {message}",
+  "board_pin_label": "実行マシン",
+  "board_pin_any": "任意のマシン（スケジューラが選択）",
+  "board_pin_holds": "{name} の GPU を確保中"
 }

@@ -168,6 +168,7 @@ mod tests {
             harness: None,
             session_id: None,
             machine_id: None,
+            pinned_machine_id: None,
             repair_count: 0,
             outcome: None,
             core_hypothesis: false,

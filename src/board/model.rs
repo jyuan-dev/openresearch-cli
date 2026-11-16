@@ -242,6 +242,8 @@ pub struct BoardProject {
     pub confidential: bool,
     pub deadline_ms: Option<i64>,
     pub key_prefix: String,
+    /// The machines this project's tickets may be scheduled on; none means every machine.
+    pub machine_ids: Option<Vec<String>>,
     pub updated_at: i64,
 }
 
@@ -299,6 +301,8 @@ pub struct Ticket {
     pub harness: Option<String>,
     pub session_id: Option<String>,
     pub machine_id: Option<String>,
+    /// The machine the user pinned it to; the scheduler places it nowhere else.
+    pub pinned_machine_id: Option<String>,
     pub repair_count: i64,
     pub outcome: Option<Outcome>,
     pub core_hypothesis: bool,

@@ -17,6 +17,9 @@ pub struct Candidate {
     pub waiting_on_dependency: bool,
     /// Its epic has spent its GPU hours or passed its deadline.
     pub out_of_budget: bool,
+    /// The only machines it may run on: its pin, else its project's machines;
+    /// none means any machine.
+    pub allowed_machines: Option<Vec<String>>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -83,6 +86,12 @@ pub fn plan(
             let fit = machines
                 .iter()
                 .filter(|machine| machine.own || !candidate.confidential)
+                .filter(|machine| {
+                    candidate
+                        .allowed_machines
+                        .as_ref()
+                        .is_none_or(|allowed| allowed.contains(&machine.machine_id))
+                })
                 .filter(|machine| free[machine.machine_id.as_str()] >= candidate.needs_gpus)
                 .min_by_key(|machine| {
                     (
@@ -144,6 +153,7 @@ mod tests {
             confidential: true,
             waiting_on_dependency: false,
             out_of_budget: false,
+            allowed_machines: None,
         }
     }
 
@@ -239,6 +249,20 @@ mod tests {
             8,
         );
         assert_eq!(starts[0].machine_id.as_deref(), Some("small"));
+    }
+
+    #[test]
+    fn a_pinned_ticket_waits_for_its_machine_instead_of_taking_the_tightest() {
+        let mut pinned = candidate("pinned", 1, 1, 1);
+        pinned.allowed_machines = Some(vec!["node50".into()]);
+        let machines = [machine("ws", 1, 0, true), machine("node50", 4, 0, true)];
+        let starts = plan(std::slice::from_ref(&pinned), &machines, 0, 8);
+        assert_eq!(starts[0].machine_id.as_deref(), Some("node50"));
+        let busy = [machine("ws", 1, 0, true), machine("node50", 4, 4, true)];
+        assert!(
+            plan(&[pinned], &busy, 0, 8).is_empty(),
+            "a full pinned machine makes it wait, not move to the free workstation"
+        );
     }
 
     #[test]

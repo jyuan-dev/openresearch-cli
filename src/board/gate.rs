@@ -71,11 +71,14 @@ pub fn backend_verdict(
     if let Some((ticket, machine)) = assigned {
         if machine.backend != target {
             return Err(format!(
-                "{} holds its GPUs on {} ({}), so its runs launch there: {}.",
+                "{} holds its GPUs on {} ({}), so its runs launch there: {}. \
+                 If it has to run elsewhere (where its data is), ask the user to pin it: \
+                 `orx ticket pin {} --machine <name>`.",
                 ticket.key,
                 machine.name,
                 machine.backend,
-                launch_flags(&machine.backend)
+                launch_flags(&machine.backend),
+                ticket.key
             ));
         }
         return Ok(());
@@ -142,6 +145,7 @@ mod tests {
             harness: None,
             session_id: Some("chat".into()),
             machine_id: None,
+            pinned_machine_id: None,
             repair_count: 0,
             outcome: None,
             core_hypothesis: false,

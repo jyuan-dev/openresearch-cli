@@ -2334,5 +2334,8 @@
   "board_machine_backend": "실행 위치",
   "board_machine_slots": "GPU 슬롯",
   "board_machine_own": "내 머신 (기밀 프로젝트에 사용 가능)",
-  "board_load_error": "보드를 불러오지 못했습니다: {message}"
+  "board_load_error": "보드를 불러오지 못했습니다: {message}",
+  "board_pin_label": "실행 머신",
+  "board_pin_any": "아무 머신(스케줄러가 선택)",
+  "board_pin_holds": "{name}의 GPU 사용 중"
 }

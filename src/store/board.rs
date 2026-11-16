@@ -21,6 +21,17 @@ use crate::error::{anyhow, bail, Context, Result};
 pub(super) fn initialize(conn: &Connection) -> Result<()> {
     conn.execute_batch(include_str!("board.sql"))
         .context("creating the board tables")?;
+    // Columns added after the tables first shipped; a rerun reports a duplicate column.
+    for ddl in [
+        "ALTER TABLE board_tickets ADD COLUMN pinned_machine_id TEXT",
+        "ALTER TABLE board_projects ADD COLUMN machines_json TEXT",
+    ] {
+        if let Err(error) = conn.execute(ddl, []) {
+            if !error.to_string().contains("duplicate column name") {
+                return Err(error).context("adding a board column");
+            }
+        }
+    }
     Ok(())
 }
 
@@ -31,6 +42,8 @@ pub struct BoardSettingsUpdate {
     pub priority: Option<i64>,
     pub confidential: Option<bool>,
     pub deadline_ms: Option<Option<i64>>,
+    /// Machine ids the project's tickets may use; `Some(None)` allows every machine again.
+    pub machine_ids: Option<Option<Vec<String>>>,
 }
 
 #[derive(Clone, Debug)]
@@ -77,7 +90,7 @@ const TICKET_COLUMNS: &str = "id, project_id, epic_id, key, kind, batch_id, titl
     change_spec, status, priority, base_experiment_id, experiment_id, needs_gpus, est_minutes,
     validation_json, harness, session_id, machine_id, repair_count, outcome, core_hypothesis,
     result_json, conclusion, tainted, tainted_reason, proposed_by, started_at, finished_at,
-    created_at, updated_at";
+    created_at, updated_at, pinned_machine_id";
 
 const EPIC_COLUMNS: &str = "id, project_id, key, title, question, status, priority,
     criteria_version, rules_json, budget_gpu_hours, budget_deadline_ms, conclusion, proposed_by,
@@ -132,6 +145,7 @@ fn ticket_from_row(row: &Row) -> rusqlite::Result<Ticket> {
         harness: row.get(16)?,
         session_id: row.get(17)?,
         machine_id: row.get(18)?,
+        pinned_machine_id: row.get(31)?,
         repair_count: row.get(19)?,
         outcome: row
             .get::<_, Option<String>>(20)?
@@ -297,7 +311,8 @@ impl Store {
         Ok(self
             .conn
             .query_row(
-                "SELECT project_id, enabled, priority, confidential, deadline_ms, key_prefix, updated_at
+                "SELECT project_id, enabled, priority, confidential, deadline_ms, key_prefix, updated_at,
+                        machines_json
                  FROM board_projects WHERE project_id = ?1",
                 [project_id],
                 |row| {
@@ -309,6 +324,8 @@ impl Store {
                         deadline_ms: row.get(4)?,
                         key_prefix: row.get(5)?,
                         updated_at: row.get(6)?,
+                        machine_ids: json_column(row, 7)?
+                            .and_then(|value| serde_json::from_value(value).ok()),
                     })
                 },
             )
@@ -376,6 +393,24 @@ impl Store {
                 params![project_id, deadline],
             )?;
         }
+        if let Some(machine_ids) = &update.machine_ids {
+            if let Some(ids) = machine_ids {
+                let known = self.list_machines()?;
+                if ids.is_empty() {
+                    bail!("Give at least one machine, or `all`.");
+                }
+                if let Some(missing) = ids.iter().find(|id| !known.iter().any(|m| &m.id == *id)) {
+                    bail!("No machine `{missing}`. List them with `orx board machines`.");
+                }
+            }
+            tx.execute(
+                "UPDATE board_projects SET machines_json = ?2 WHERE project_id = ?1",
+                params![
+                    project_id,
+                    machine_ids.as_ref().map(|ids| json!(ids).to_string())
+                ],
+            )?;
+        }
         Self::append_board_event(
             &tx,
             project_id,
@@ -385,6 +420,7 @@ impl Store {
             &json!({
                 "enabled": update.enabled, "prefix": prefix, "priority": update.priority,
                 "confidential": update.confidential, "deadlineMs": update.deadline_ms,
+                "machines": update.machine_ids,
             }),
         )?;
         tx.commit()?;
@@ -797,6 +833,88 @@ impl Store {
             actor,
             "ticket_amended",
             &json!({"estMinutes": est_minutes, "validation": validation, "gpus": needs_gpus}),
+        )?;
+        tx.commit()?;
+        self.require_ticket(&ticket.id)
+    }
+
+    /// A machine by id or name.
+    pub fn require_machine(&self, id_or_name: &str) -> Result<Machine> {
+        self.list_machines()?
+            .into_iter()
+            .find(|machine| {
+                machine.id == id_or_name || machine.name.eq_ignore_ascii_case(id_or_name)
+            })
+            .ok_or_else(|| {
+                anyhow!("No machine `{id_or_name}`. List them with `orx board machines`.")
+            })
+    }
+
+    /// Pins a ticket to one machine, or unpins it with `None` (user only). A
+    /// ticket that already holds GPUs moves its hold there at once, so its
+    /// chat can launch on the pinned machine without another dispatch.
+    pub fn pin_ticket(
+        &self,
+        id_or_key: &str,
+        machine: Option<&str>,
+        actor: &Actor,
+    ) -> Result<Ticket> {
+        require_user(actor, "pin a ticket to a machine")?;
+        let ticket = self.require_ticket(id_or_key)?;
+        if matches!(
+            ticket.status,
+            TicketStatus::Done | TicketStatus::Rejected | TicketStatus::Cancelled
+        ) {
+            bail!(
+                "{} is {}; there is nothing left to place.",
+                ticket.key,
+                ticket.status
+            );
+        }
+        let machine = machine.map(|name| self.require_machine(name)).transpose()?;
+        if let Some(machine) = &machine {
+            if !machine.enabled {
+                bail!("{} is turned off on the board.", machine.name);
+            }
+            let board = self.require_board_project(&ticket.project_id)?;
+            if board.confidential && !machine.own {
+                bail!(
+                    "{} is confidential, so it runs only on your own machines; {} is not one.",
+                    ticket.key,
+                    machine.name
+                );
+            }
+            if ticket.kind == TicketKind::Experiment && ticket.needs_gpus > machine.gpu_slots {
+                bail!(
+                    "{} needs {} GPUs and {} has {} slots.",
+                    ticket.key,
+                    ticket.needs_gpus,
+                    machine.name,
+                    machine.gpu_slots
+                );
+            }
+        }
+        let pin = machine.as_ref().map(|machine| machine.id.clone());
+        let holds = matches!(ticket.status, TicketStatus::Running | TicketStatus::Waiting)
+            && ticket.machine_id.is_some();
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute(
+            "UPDATE board_tickets SET pinned_machine_id = ?2, updated_at = ?3 WHERE id = ?1",
+            params![ticket.id, pin, now_ms()],
+        )?;
+        if let (true, Some(pin)) = (holds, &pin) {
+            tx.execute(
+                "UPDATE board_tickets SET machine_id = ?2 WHERE id = ?1",
+                params![ticket.id, pin],
+            )?;
+        }
+        Self::append_board_event(
+            &tx,
+            &ticket.project_id,
+            &ticket.id,
+            actor,
+            "ticket_pinned",
+            &json!({"machine": machine.as_ref().map(|machine| &machine.name)}),
         )?;
         tx.commit()?;
         self.require_ticket(&ticket.id)
@@ -1575,7 +1693,8 @@ impl Store {
             "SELECT t.id, p.priority, COALESCE(e.priority, 100), t.priority, t.created_at,
                     t.needs_gpus, p.confidential, t.epic_id, e.budget_gpu_hours, e.budget_deadline_ms,
                     EXISTS(SELECT 1 FROM board_relations r JOIN board_tickets d ON d.id = r.to_id
-                           WHERE r.from_id = t.id AND r.kind = 'blocked_by' AND d.status != 'done')
+                           WHERE r.from_id = t.id AND r.kind = 'blocked_by' AND d.status != 'done'),
+                    t.pinned_machine_id, p.machines_json
              FROM board_tickets t
              JOIN board_projects p ON p.project_id = t.project_id AND p.enabled = 1
              LEFT JOIN board_epics e ON e.id = t.epic_id
@@ -1596,6 +1715,11 @@ impl Store {
                         confidential: row.get(6)?,
                         waiting_on_dependency: row.get(10)?,
                         out_of_budget: false,
+                        allowed_machines: match row.get::<_, Option<String>>(11)? {
+                            Some(pin) => Some(vec![pin]),
+                            None => json_column(row, 12)?
+                                .and_then(|value| serde_json::from_value(value).ok()),
+                        },
                     },
                     row.get(7)?,
                     row.get(8)?,
@@ -3055,6 +3179,82 @@ mod tests {
             .into_iter()
             .filter(|decision| decision.kind == kind)
             .collect()
+    }
+
+    #[test]
+    fn a_pin_and_the_project_machines_decide_where_a_ticket_runs() {
+        let (store, id, epic) = board_with_epic("Slot JEPA");
+        let ws = store
+            .upsert_machine("workstation", "local", 1, true)
+            .unwrap();
+        let node = store
+            .upsert_machine("Node50", "ssh:Node50", 4, true)
+            .unwrap();
+        let rented = store
+            .upsert_machine("rented", "ssh:rented", 8, false)
+            .unwrap();
+        let ticket = approved(&store, &id, &epic, "role decoder");
+        let plan = |store: &Store| {
+            scheduler::plan(
+                &store.dispatch_candidates().unwrap(),
+                &store.machine_slots().unwrap(),
+                0,
+                8,
+            )
+        };
+        assert_eq!(plan(&store)[0].machine_id.as_deref(), Some(ws.id.as_str()));
+
+        let refused = store
+            .pin_ticket(&ticket.id, Some("Node50"), &agent())
+            .unwrap_err()
+            .to_string();
+        assert!(refused.contains("Only the user"), "{refused}");
+        let refused = store
+            .pin_ticket(&ticket.id, Some("rented"), &Actor::User)
+            .unwrap_err()
+            .to_string();
+        assert!(refused.contains("confidential"), "{refused}");
+        let pinned = store
+            .pin_ticket(&ticket.id, Some("node50"), &Actor::User)
+            .unwrap();
+        assert_eq!(pinned.pinned_machine_id.as_deref(), Some(node.id.as_str()));
+        assert_eq!(
+            plan(&store)[0].machine_id.as_deref(),
+            Some(node.id.as_str())
+        );
+
+        // Unpinned, the project's machine list still keeps it off the workstation.
+        store.pin_ticket(&ticket.id, None, &Actor::User).unwrap();
+        store
+            .update_board_project(
+                &id,
+                &BoardSettingsUpdate {
+                    machine_ids: Some(Some(vec![node.id.clone(), rented.id.clone()])),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            plan(&store)[0].machine_id.as_deref(),
+            Some(node.id.as_str())
+        );
+
+        // A ticket already holding the workstation moves its hold when pinned.
+        store
+            .update_board_project(
+                &id,
+                &BoardSettingsUpdate {
+                    machine_ids: Some(None),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let held = store.dispatch_ticket(&ticket.id, Some(&ws.id)).unwrap();
+        assert_eq!(held.machine_id.as_deref(), Some(ws.id.as_str()));
+        let moved = store
+            .pin_ticket(&ticket.id, Some("Node50"), &Actor::User)
+            .unwrap();
+        assert_eq!(moved.machine_id.as_deref(), Some(node.id.as_str()));
     }
 
     #[test]

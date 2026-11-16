@@ -2334,5 +2334,8 @@
   "board_machine_backend": "运行位置",
   "board_machine_slots": "GPU 槽位",
   "board_machine_own": "我自己的机器（保密项目可用）",
-  "board_load_error": "无法加载看板：{message}"
+  "board_load_error": "无法加载看板：{message}",
+  "board_pin_label": "运行机器",
+  "board_pin_any": "任意机器（由调度器选择）",
+  "board_pin_holds": "GPU 占用在 {name}"
 }

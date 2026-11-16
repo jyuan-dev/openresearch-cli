@@ -2334,5 +2334,8 @@
   "board_machine_backend": "Dónde se ejecuta",
   "board_machine_slots": "Ranuras de GPU",
   "board_machine_own": "Mi propia máquina (permitida en proyectos confidenciales)",
-  "board_load_error": "No se pudo cargar el tablero: {message}"
+  "board_load_error": "No se pudo cargar el tablero: {message}",
+  "board_pin_label": "Se ejecuta en",
+  "board_pin_any": "Cualquier máquina (elige el planificador)",
+  "board_pin_holds": "Ocupa GPU en {name}"
 }

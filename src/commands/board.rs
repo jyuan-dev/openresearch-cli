@@ -49,6 +49,10 @@ pub enum BoardCommand {
         /// Turn the board off again (tickets are kept).
         #[arg(long)]
         disable: bool,
+        /// The machines this project's tickets may run on, by name
+        /// (`Node49,Node50`), or `all`.
+        #[arg(long, value_delimiter = ',')]
+        machines: Option<Vec<String>>,
     },
     /// List, add or remove the machines tickets are scheduled on.
     Machines {
@@ -296,6 +300,16 @@ pub enum TicketCommand {
     Add(Box<TicketSpec>),
     /// Show a ticket and its activity.
     Show { ticket: String },
+    /// Run a ticket only on one machine, e.g. where its data is (user only).
+    Pin {
+        ticket: String,
+        /// The machine's name, as `orx board machines` lists it.
+        #[arg(long, required_unless_present = "clear")]
+        machine: Option<String>,
+        /// Let the scheduler place it on any of the project's machines again.
+        #[arg(long, conflicts_with = "machine")]
+        clear: bool,
+    },
     /// Fill in or correct a proposed ticket before it is approved.
     Amend {
         ticket: String,
@@ -438,11 +452,25 @@ pub fn board(args: BoardArgs) -> Result<()> {
             priority,
             confidential,
             disable,
+            machines,
         }) => {
             if actor != Actor::User {
                 bail!("Only the user changes board settings.");
             }
-            let board = Store::open()?.update_board_project(
+            let store = Store::open()?;
+            let machine_ids = match machines {
+                None => None,
+                Some(names) if names.iter().any(|name| name.eq_ignore_ascii_case("all")) => {
+                    Some(None)
+                }
+                Some(names) => Some(Some(
+                    names
+                        .iter()
+                        .map(|name| store.require_machine(name.trim()).map(|machine| machine.id))
+                        .collect::<Result<Vec<_>>>()?,
+                )),
+            };
+            let board = store.update_board_project(
                 &project_id,
                 &BoardSettingsUpdate {
                     enabled: Some(!disable),
@@ -450,13 +478,26 @@ pub fn board(args: BoardArgs) -> Result<()> {
                     priority,
                     confidential: confidential.map(|value| matches!(value, OnOff::On)),
                     deadline_ms: None,
+                    machine_ids,
                 },
             )?;
             if args.json {
                 return print_json(&board);
             }
+            let machines = match &board.machine_ids {
+                None => "every machine".to_string(),
+                Some(ids) => ids
+                    .iter()
+                    .map(|id| {
+                        store
+                            .require_machine(id)
+                            .map_or_else(|_| id.clone(), |machine| machine.name)
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            };
             println!(
-                "Board {} for {} (prefix {}, priority {}, {}).",
+                "Board {} for {} (prefix {}, priority {}, runs on {machines}, {}).",
                 if board.enabled { "on" } else { "off" },
                 board.project_id,
                 board.key_prefix,
@@ -1069,7 +1110,19 @@ pub fn ticket(args: TicketArgs) -> Result<()> {
                     .validation
                     .as_ref()
                     .map_or("missing".to_string(), Value::to_string);
-                println!("GPUs: {}  Estimate: {est}", ticket.needs_gpus);
+                let machine = |id: &Option<String>| {
+                    id.as_deref().map(|id| {
+                        store
+                            .require_machine(id)
+                            .map_or_else(|_| id.to_string(), |machine| machine.name)
+                    })
+                };
+                println!(
+                    "GPUs: {}  Estimate: {est}  Machine: {}  Pinned: {}",
+                    ticket.needs_gpus,
+                    machine(&ticket.machine_id).unwrap_or_else(|| "none".into()),
+                    machine(&ticket.pinned_machine_id).unwrap_or_else(|| "no".into())
+                );
                 println!("Validation: {validation}");
             }
             if let Some(outcome) = ticket.outcome {
@@ -1101,6 +1154,9 @@ pub fn ticket(args: TicketArgs) -> Result<()> {
             &actor,
             json!({"note": note}),
         )?,
+        TicketCommand::Pin {
+            ticket, machine, ..
+        } => store.pin_ticket(&ticket, machine.as_deref(), &actor)?,
         TicketCommand::Amend {
             ticket,
             est,

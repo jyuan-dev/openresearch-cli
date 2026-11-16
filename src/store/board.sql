@@ -5,6 +5,7 @@ CREATE TABLE IF NOT EXISTS board_projects (
   confidential INTEGER NOT NULL DEFAULT 1,
   deadline_ms  INTEGER,
   key_prefix   TEXT NOT NULL,
+  machines_json TEXT,
   next_ticket  INTEGER NOT NULL DEFAULT 1,
   next_epic    INTEGER NOT NULL DEFAULT 1,
   updated_at   INTEGER NOT NULL
@@ -78,6 +79,7 @@ CREATE TABLE IF NOT EXISTS board_tickets (
   conclusion         TEXT,
   tainted            INTEGER NOT NULL DEFAULT 0,
   tainted_reason     TEXT,
+  pinned_machine_id  TEXT,
   proposed_by        TEXT NOT NULL,
   started_at         INTEGER,
   finished_at        INTEGER,

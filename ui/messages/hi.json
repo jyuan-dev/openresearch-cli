@@ -2334,5 +2334,8 @@
   "board_machine_backend": "कहाँ चलेगा",
   "board_machine_slots": "GPU स्लॉट",
   "board_machine_own": "मेरी अपनी मशीन (गोपनीय प्रोजेक्ट के लिए अनुमति)",
-  "board_load_error": "बोर्ड लोड नहीं हो सका: {message}"
+  "board_load_error": "बोर्ड लोड नहीं हो सका: {message}",
+  "board_pin_label": "किस मशीन पर चले",
+  "board_pin_any": "कोई भी मशीन (शेड्यूलर चुनेगा)",
+  "board_pin_holds": "{name} पर GPU रोके हुए है"
 }

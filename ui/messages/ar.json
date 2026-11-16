@@ -2334,5 +2334,8 @@
   "board_machine_backend": "مكان التشغيل",
   "board_machine_slots": "خانات GPU",
   "board_machine_own": "جهازي الخاص (مسموح به للمشاريع السرية)",
-  "board_load_error": "تعذّر تحميل اللوحة: {message}"
+  "board_load_error": "تعذّر تحميل اللوحة: {message}",
+  "board_pin_label": "يعمل على",
+  "board_pin_any": "أي جهاز (يختاره المُجدول)",
+  "board_pin_holds": "يحجز وحدات GPU على {name}"
 }

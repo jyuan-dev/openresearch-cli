@@ -423,6 +423,7 @@ pub(super) fn routes() -> Router<AppState> {
         .route("/api/board/tickets/{id}", get(ticket_detail))
         .route("/api/board/tickets/{id}/comment", post(comment))
         .route("/api/board/tickets/{id}/move", post(move_ticket))
+        .route("/api/board/tickets/{id}/pin", post(pin_ticket))
         .route("/api/board/decisions/{id}/resolve", post(resolve))
         .route("/api/board/machines", get(list_machines).post(add_machine))
         .route("/api/board/machines/{name}", delete(remove_machine))
@@ -551,6 +552,7 @@ async fn update_project(Path(id): Path<String>, Json(req): Json<ProjectBoardReq>
                 priority: req.priority,
                 confidential: req.confidential,
                 deadline_ms: None,
+                machine_ids: None,
             },
         )
         .map_err(refused)?;
@@ -590,6 +592,19 @@ async fn comment(Path(id): Path<String>, Json(req): Json<CommentReq>) -> ApiResu
         .comment_on_ticket(&id, &req.text, &Actor::User)
         .map_err(refused)?;
     Ok(Json(json!({"ok": true})))
+}
+
+#[derive(Deserialize)]
+struct PinReq {
+    /// The machine's name or id; null unpins.
+    machine: Option<String>,
+}
+
+async fn pin_ticket(Path(id): Path<String>, Json(req): Json<PinReq>) -> ApiResult {
+    let ticket = Store::open()?
+        .pin_ticket(&id, req.machine.as_deref(), &Actor::User)
+        .map_err(refused)?;
+    Ok(Json(json!({"ticket": ticket})))
 }
 
 #[derive(Deserialize)]

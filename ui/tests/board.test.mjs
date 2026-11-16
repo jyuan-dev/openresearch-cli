@@ -26,13 +26,14 @@ const click = async (element) => {
 };
 
 /** Shows the board with this inbox and project board; returns every write the page sent and every chat it opened. */
-async function openBoard({ decisions = [], running = [], machines = [], board = { board: null, epics: [], tickets: [] } } = {}) {
+async function openBoard({ decisions = [], running = [], machines = [], board = { board: null, epics: [], tickets: [] }, extraRoutes = {} } = {}) {
   const writes = [];
   const chats = [];
   const routes = {
     "GET /api/board/inbox": () => ({ decisions, running, machines }),
     "GET /api/board/projects/p": () => board,
     "GET /api/board/machines": () => ({ machines: machines.map((row) => row.machine) }),
+    ...extraRoutes,
   };
   serve((path, init) => {
     const request = `${init.method ?? "GET"} ${path.split("?")[0]}`;
@@ -177,4 +178,29 @@ test("giving two groups the same name merges them on import", async () => {
   await type(document.querySelectorAll(`input[aria-label="${m.board_import_group_title_label()}"]`)[1], "One ");
   await click(find("button", m.board_import_confirm({ count: "1" })));
   assert.deepEqual(writes[0].body.groups, [{ title: "One", experimentIds: ["a", "b"] }]);
+});
+
+test("a blocked ticket can be pinned to the machine where its data is", async () => {
+  const blocked = { ...ticket("t1", "SJ-047", "role decoder"), status: "blocked", machineId: "ws", pinnedMachineId: null };
+  const machine = (id, name) => ({ machine: { id, name, backend: id === "ws" ? "local" : `ssh:${name}`, gpuSlots: 4, own: true, enabled: true }, inUse: 0 });
+  const { writes } = await openBoard({
+    machines: [machine("ws", "workstation"), machine("n50", "Node50")],
+    board: {
+      board: { projectId: "p", enabled: true, priority: 100, confidential: true, keyPrefix: "SJ" },
+      epics: [],
+      tickets: [blocked],
+    },
+    extraRoutes: { "GET /api/board/tickets/t1": () => ({ ticket: blocked, events: [], epic: null }) },
+  });
+  await click(find('[role="tab"]', m.board_tab_project()));
+  await click(find("button[aria-expanded]", "SJ-047"));
+  const select = find("label", m.board_pin_label()).querySelector("select");
+  assert.equal(select.value, "", "unpinned: any machine");
+  assert.deepEqual([...select.options].map((option) => option.textContent), [m.board_pin_any(), "workstation", "Node50"]);
+  await act(async () => {
+    select.value = "n50";
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  await settle();
+  assert.deepEqual(writes, [{ path: "/api/board/tickets/t1/pin", body: { machine: "n50" } }]);
 });

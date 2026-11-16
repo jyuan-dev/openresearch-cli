@@ -2334,5 +2334,8 @@
   "board_machine_backend": "Nerede çalışır",
   "board_machine_slots": "GPU yuvaları",
   "board_machine_own": "Kendi makinem (gizli projelerde kullanılabilir)",
-  "board_load_error": "Pano yüklenemedi: {message}"
+  "board_load_error": "Pano yüklenemedi: {message}",
+  "board_pin_label": "Çalıştığı makine",
+  "board_pin_any": "Herhangi bir makine (zamanlayıcı seçer)",
+  "board_pin_holds": "GPU'ları {name} üzerinde tutuyor"
 }

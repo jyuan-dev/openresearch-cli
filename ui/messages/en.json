@@ -2334,5 +2334,8 @@
   "board_machine_backend": "Where it runs",
   "board_machine_slots": "GPU slots",
   "board_machine_own": "My own machine (allowed for confidential projects)",
-  "board_load_error": "Couldn't load the board: {message}"
+  "board_load_error": "Couldn't load the board: {message}",
+  "board_pin_label": "Runs on",
+  "board_pin_any": "Any machine (the scheduler picks)",
+  "board_pin_holds": "Holds its GPUs on {name}"
 }

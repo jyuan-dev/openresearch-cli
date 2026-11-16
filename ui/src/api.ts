@@ -1960,6 +1960,7 @@ export interface BoardTicket {
   estMinutes: number | null;
   sessionId: string | null;
   machineId: string | null;
+  pinnedMachineId: string | null;
   repairCount: number;
   outcome: BoardOutcome | null;
   coreHypothesis: boolean;
@@ -2040,6 +2041,7 @@ export interface BoardMachine {
   backend: string;
   gpuSlots: number;
   own: boolean;
+  enabled: boolean;
 }
 
 export interface BoardInbox {
@@ -2515,6 +2517,8 @@ export function createApi(
       post<{ decision: BoardDecision }>(`/api/board/decisions/${encodeURIComponent(decisionId)}/resolve`, choice),
     move: (ticketId: string, action: "approve" | "reject" | "accept" | "challenge" | "unblock" | "cancel", note?: string) =>
       post<{ ticket: BoardTicket }>(`/api/board/tickets/${encodeURIComponent(ticketId)}/move`, { action, note }),
+    pin: (ticketId: string, machine: string | null) =>
+      post<{ ticket: BoardTicket }>(`/api/board/tickets/${encodeURIComponent(ticketId)}/pin`, { machine }),
     comment: (ticketId: string, text: string) =>
       post<{ ok: true }>(`/api/board/tickets/${encodeURIComponent(ticketId)}/comment`, { text }),
     machines: (signal?: AbortSignal) => get<{ machines: BoardMachine[] }>("/api/board/machines", signal).then((r) => r.machines),

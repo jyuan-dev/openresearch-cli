@@ -612,6 +612,9 @@ function TicketDetail({ ticketId, onClose }: { ticketId: string; onClose: () => 
         </div>
       </div>
       {ticket.changeSpec && <p className="mt-2 mb-0 text-sm text-text" dir="auto">{ticket.changeSpec}</p>}
+      {ticket.kind === "experiment" && !closedStatuses.includes(ticket.status) && (
+        <MachinePin ticket={ticket} onError={setError} />
+      )}
       <h4 className="mt-4 mb-1 text-sm font-semibold text-text">{m.board_activity()}</h4>
       <ol className="m-0 ps-0 list-none">
         {events.map((event) => (
@@ -644,6 +647,47 @@ function TicketDetail({ ticketId, onClose }: { ticketId: string; onClose: () => 
       </form>
       {error && <div role="alert" className="mt-2.5 text-sm text-accent-red">{error}</div>}
     </section>
+  );
+}
+
+/** Where a ticket runs: any machine the scheduler picks, or the one the user pins it to. */
+function MachinePin({ ticket, onError }: { ticket: BoardTicket; onError: (message: string | null) => void }) {
+  const { api, queries } = useWorkspace();
+  const machines = useQuery(queries.getBoardMachinesQuery());
+  const [saving, setSaving] = useState(false);
+  const list = machines.data ?? [];
+  const holding = list.find((machine) => machine.id === ticket.machineId);
+  const pin = async (machine: string | null) => {
+    onError(null);
+    setSaving(true);
+    try {
+      await api.board.pin(ticket.id, machine);
+    } catch (e) {
+      onError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+  return (
+    <div className="mt-3 flex flex-wrap items-center gap-2 text-sm text-text">
+      <label className="flex items-center gap-2">
+        {m.board_pin_label()}
+        <select
+          className="h-8 max-w-56 rounded-md border border-border bg-background px-1.5 text-sm text-text"
+          value={ticket.pinnedMachineId ?? ""}
+          disabled={saving || !machines.data}
+          onChange={(event) => void pin(event.target.value || null)}
+        >
+          <option value="">{m.board_pin_any()}</option>
+          {list.filter((machine) => machine.enabled || machine.id === ticket.pinnedMachineId).map((machine) => (
+            <option key={machine.id} value={machine.id}>{machine.name}</option>
+          ))}
+        </select>
+      </label>
+      {holding && ["running", "waiting"].includes(ticket.status) && (
+        <span className="text-xs text-subtext">{m.board_pin_holds({ name: autoDir(holding.name) })}</span>
+      )}
+    </div>
   );
 }
 
