@@ -45,7 +45,8 @@ pub fn create_verdict(bound: Option<&Ticket>, human_turn: bool) -> CreateVerdict
     };
     CreateVerdict::Deny(format!(
         "This project plans its experiments on the research board, and {why}. \
-         Propose it with `orx ticket propose <projectId> --title \"…\" --hypothesis \"…\"` \
+         Propose it with `orx ticket propose --epic <epic> --title \"…\" --hypothesis \"…\" \
+         --est 2h --validation-file '{{\"metrics\":[…],\"every\":…,\"logs\":…}}'` \
          and wait for the user to approve it; a chat the board starts for it will create the experiment."
     ))
 }

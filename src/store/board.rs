@@ -745,6 +745,63 @@ impl Store {
         self.require_ticket(&id)
     }
 
+    /// Fills in or corrects what a proposed ticket declares before approval.
+    /// Agents may amend: the ticket still waits for the user on its card.
+    pub fn amend_ticket(
+        &self,
+        id_or_key: &str,
+        est_minutes: Option<i64>,
+        validation: Option<Value>,
+        needs_gpus: Option<i64>,
+        actor: &Actor,
+    ) -> Result<Ticket> {
+        let ticket = self.require_ticket(id_or_key)?;
+        if ticket.status != TicketStatus::Proposed {
+            bail!(
+                "{} is {}; only a proposed ticket can be amended.",
+                ticket.key,
+                ticket.status
+            );
+        }
+        if let Some(gpus) = needs_gpus {
+            if gpus < 0 {
+                bail!("`--gpus` cannot be negative.");
+            }
+            if ticket.kind == TicketKind::Analysis && gpus > 0 {
+                bail!("An analysis ticket runs no experiment, so it cannot reserve GPUs.");
+            }
+        }
+        if validation.as_ref().is_some_and(|value| !value.is_object()) {
+            bail!("The validation must be a JSON object.");
+        }
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute(
+            "UPDATE board_tickets SET
+                 est_minutes = COALESCE(?2, est_minutes),
+                 validation_json = COALESCE(?3, validation_json),
+                 needs_gpus = COALESCE(?4, needs_gpus),
+                 updated_at = ?5
+             WHERE id = ?1",
+            params![
+                ticket.id,
+                est_minutes,
+                validation.as_ref().map(Value::to_string),
+                needs_gpus,
+                now_ms()
+            ],
+        )?;
+        Self::append_board_event(
+            &tx,
+            &ticket.project_id,
+            &ticket.id,
+            actor,
+            "ticket_amended",
+            &json!({"estMinutes": est_minutes, "validation": validation, "gpus": needs_gpus}),
+        )?;
+        tx.commit()?;
+        self.require_ticket(&ticket.id)
+    }
+
     /// A ticket by id or key (`SJ-042`).
     pub fn ticket(&self, id_or_key: &str) -> Result<Option<Ticket>> {
         Ok(self
@@ -779,10 +836,16 @@ impl Store {
         let mut gaps = Vec::new();
         if ticket.kind == TicketKind::Experiment {
             if ticket.est_minutes.is_none() {
-                gaps.push("an estimated duration (`--est`)".to_string());
+                gaps.push(format!(
+                    "an estimated duration (`orx ticket amend {} --est 2h`)",
+                    ticket.key
+                ));
             }
             if ticket.validation.is_none() {
-                gaps.push("its validation metrics and logs (`--validation-file`)".to_string());
+                gaps.push(format!(
+                    "its validation metrics and logs (`orx ticket amend {} --validation-file …`)",
+                    ticket.key
+                ));
             }
         }
         if let Some(epic_id) = &ticket.epic_id {
@@ -2589,6 +2652,67 @@ mod tests {
             )
             .unwrap();
         assert_eq!(board.key_prefix, "SX");
+    }
+
+    #[test]
+    fn a_ticket_missing_its_estimate_is_amended_then_approved() {
+        let store = store();
+        let id = project(&store, "Slot JEPA");
+        store
+            .update_board_project(&id, &BoardSettingsUpdate::default())
+            .unwrap();
+        let epic = active_epic(&store, &id);
+        let ticket = store
+            .create_ticket(
+                &NewTicket {
+                    project_id: id.clone(),
+                    epic_id: Some(epic.id.clone()),
+                    kind: TicketKind::Experiment,
+                    batch_id: None,
+                    title: "mask moments".into(),
+                    hypothesis: None,
+                    change_spec: None,
+                    priority: 100,
+                    base_experiment_id: None,
+                    needs_gpus: 1,
+                    est_minutes: None,
+                    validation: None,
+                    harness: None,
+                    core_hypothesis: false,
+                },
+                &agent(),
+            )
+            .unwrap();
+        let refused = store
+            .move_ticket(&ticket.id, TicketAction::Approve, &Actor::User, Value::Null)
+            .unwrap_err()
+            .to_string();
+        assert!(refused.contains("orx ticket amend SJ-001"), "{refused}");
+        let wrong = store.amend_ticket(&ticket.id, None, Some(json!([1])), None, &agent());
+        assert!(wrong.is_err(), "validation must be an object");
+        let amended = store
+            .amend_ticket(
+                &ticket.id,
+                Some(30),
+                Some(json!({"metrics": ["pose_px"]})),
+                None,
+                &agent(),
+            )
+            .unwrap();
+        assert_eq!(
+            (amended.est_minutes, amended.needs_gpus, amended.status),
+            (Some(30), 1, TicketStatus::Proposed),
+            "the agent fills it in; it still waits for the user"
+        );
+        let approved = store
+            .move_ticket(&ticket.id, TicketAction::Approve, &Actor::User, Value::Null)
+            .unwrap();
+        assert_eq!(approved.status, TicketStatus::Ready);
+        let late = store
+            .amend_ticket(&ticket.id, Some(60), None, None, &agent())
+            .unwrap_err()
+            .to_string();
+        assert!(late.contains("only a proposed ticket"), "{late}");
     }
 
     #[test]

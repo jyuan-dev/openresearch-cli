@@ -258,7 +258,8 @@ pub struct TicketSpec {
     /// Estimated duration, like `90m`, `2h` or `1h30m`.
     #[arg(long)]
     est: Option<String>,
-    /// JSON file: validation metrics, how often they are logged, and where training logs go.
+    /// Validation metrics, how often they are logged, and where training logs go:
+    /// a JSON file, or the JSON itself. Required for experiment tickets.
     #[arg(long)]
     validation_file: Option<String>,
     /// Groups the options of one decision (a round) onto one approval card.
@@ -295,6 +296,20 @@ pub enum TicketCommand {
     Add(Box<TicketSpec>),
     /// Show a ticket and its activity.
     Show { ticket: String },
+    /// Fill in or correct a proposed ticket before it is approved.
+    Amend {
+        ticket: String,
+        /// Estimated duration, like `90m`, `2h` or `1h30m`.
+        #[arg(long)]
+        est: Option<String>,
+        /// Validation metrics, how often they are logged, and where training logs go:
+        /// a JSON file, or the JSON itself.
+        #[arg(long)]
+        validation_file: Option<String>,
+        /// GPUs the run needs while it holds a slot.
+        #[arg(long)]
+        gpus: Option<i64>,
+    },
     /// Approve a proposed ticket (user only).
     Approve { ticket: String },
     /// Decline a proposed or blocked ticket (user only).
@@ -367,6 +382,19 @@ fn read_json_file(path: &str) -> Result<Value> {
     let text = std::fs::read_to_string(path).with_context(|| format!("reading {path}"))?;
     serde_json::from_str(&text).with_context(|| format!("{path} is not valid JSON"))
 }
+
+/// `--validation-file`: a path to a JSON file, or the JSON object itself.
+fn read_validation(arg: &str) -> Result<Value> {
+    if arg.trim_start().starts_with('{') {
+        return serde_json::from_str(arg).context("--validation-file is not valid JSON");
+    }
+    read_json_file(arg)
+}
+
+/// What an experiment ticket must declare before the user can approve it.
+pub const EXPERIMENT_NEEDS: &str = "Experiment tickets need `--est` (like `2h`) and `--validation-file` \
+with the validation metrics, how often they are logged and where the training logs go, e.g. \
+`--validation-file '{\"metrics\":[\"val_loss\"],\"every\":\"500 steps\",\"logs\":\"tensorboard: runs/\"}'`.";
 
 /// Minutes in `90m`, `2h`, `1h30m` or a bare number of minutes.
 pub fn parse_minutes(text: &str) -> Result<i64> {
@@ -965,7 +993,7 @@ fn new_ticket(store: &Store, spec: TicketSpec) -> Result<NewTicket> {
             bail!("Give the ticket an `--epic`, or a `--project` for an unplanned ticket.")
         }
     };
-    Ok(NewTicket {
+    let new = NewTicket {
         project_id,
         epic_id,
         kind: match spec.kind {
@@ -983,11 +1011,16 @@ fn new_ticket(store: &Store, spec: TicketSpec) -> Result<NewTicket> {
         validation: spec
             .validation_file
             .as_deref()
-            .map(read_json_file)
+            .map(read_validation)
             .transpose()?,
         harness: spec.harness,
         core_hypothesis: spec.core,
-    })
+    };
+    if new.kind == TicketKind::Experiment && (new.est_minutes.is_none() || new.validation.is_none())
+    {
+        bail!("{EXPERIMENT_NEEDS}");
+    }
+    Ok(new)
 }
 
 pub fn ticket(args: TicketArgs) -> Result<()> {
@@ -1028,6 +1061,17 @@ pub fn ticket(args: TicketArgs) -> Result<()> {
                     println!("{label}: {value}");
                 }
             }
+            if ticket.kind == TicketKind::Experiment {
+                let est = ticket
+                    .est_minutes
+                    .map_or("missing".to_string(), |minutes| format!("{minutes}m"));
+                let validation = ticket
+                    .validation
+                    .as_ref()
+                    .map_or("missing".to_string(), Value::to_string);
+                println!("GPUs: {}  Estimate: {est}", ticket.needs_gpus);
+                println!("Validation: {validation}");
+            }
             if let Some(outcome) = ticket.outcome {
                 println!("Outcome: {outcome}");
             }
@@ -1057,6 +1101,26 @@ pub fn ticket(args: TicketArgs) -> Result<()> {
             &actor,
             json!({"note": note}),
         )?,
+        TicketCommand::Amend {
+            ticket,
+            est,
+            validation_file,
+            gpus,
+        } => {
+            if est.is_none() && validation_file.is_none() && gpus.is_none() {
+                bail!("Give `--est`, `--validation-file` or `--gpus` to change.");
+            }
+            store.amend_ticket(
+                &ticket,
+                est.as_deref().map(parse_minutes).transpose()?,
+                validation_file
+                    .as_deref()
+                    .map(read_validation)
+                    .transpose()?,
+                gpus,
+                &actor,
+            )?
+        }
         TicketCommand::Unblock { ticket } => {
             store.move_ticket(&ticket, TicketAction::Unblock, &actor, Value::Null)?
         }
