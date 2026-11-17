@@ -76,7 +76,9 @@ pub fn next(from: TicketStatus, action: TicketAction, actor: &Actor) -> Result<T
         A::Approve | A::Accept => user_or_rule(true),
         A::Reject | A::Answer | A::Challenge | A::Unblock | A::Cancel => by == Who::User,
         A::Dispatch | A::Requeue => by == Who::Board,
-        A::Ask | A::Report => by == Who::Agent,
+        A::Ask => by == Who::Agent,
+        // The board files a run's own result when the agent never reports it.
+        A::Report => by != Who::User,
         A::Block => by != Who::User,
     };
     if !allowed {
@@ -198,6 +200,12 @@ mod tests {
         assert!(next(S::Running, A::Block, &Actor::User).is_err());
         assert_eq!(next(S::Running, A::Block, &agent()).unwrap(), S::Blocked);
         assert_eq!(next(S::Running, A::Requeue, &board()).unwrap(), S::Ready);
+    }
+
+    #[test]
+    fn the_board_may_file_a_report_the_agent_never_sent_but_the_user_may_not() {
+        assert_eq!(next(S::Running, A::Report, &board()).unwrap(), S::Review);
+        assert!(next(S::Running, A::Report, &Actor::User).is_err());
     }
 
     #[test]

@@ -62,12 +62,13 @@ async fn pass(state: &AppState, ended: &[(String, String)]) -> Result<()> {
     // The store is not `Send`: every use of it finishes before the next await.
     // While orx is still detecting agents, a start would fail for no real reason.
     let agents_settling = agents_settling(state).await;
+    let busy = state.chat.busy_sessions().await;
     let (started, messages, stopping, notification) = {
         let store = Store::open()?;
         for (run_id, phase) in ended {
             note_run_end(&store, run_id, phase)?;
         }
-        reconcile(&store)?;
+        reconcile(&store, &busy)?;
         for epic in store.active_epics()? {
             store.check_epic_budget(&epic)?;
         }
@@ -244,8 +245,20 @@ fn note_run_end(store: &Store, run_id: &str, phase: &str) -> Result<()> {
 }
 
 /// Brings running tickets back in line with their chats and runs.
-fn reconcile(store: &Store) -> Result<()> {
+fn reconcile(store: &Store, busy_chats: &[String]) -> Result<()> {
     let now = now_ms();
+    // A chat asked for its report and gone quiet past the grace: the board files
+    // the run's own result, so no ended run leaves its ticket running.
+    for (ticket, run) in store.overdue_reports(now, brief::REPORT_GRACE_MS)? {
+        if ticket
+            .session_id
+            .as_ref()
+            .is_some_and(|session| busy_chats.contains(session))
+        {
+            continue;
+        }
+        store.file_run_result(&ticket, &run)?;
+    }
     for ticket in store.tickets_in(&[TicketStatus::Running, TicketStatus::Waiting])? {
         if let Some(experiment) = &ticket.experiment_id {
             if let Some(run) = store.latest_run_for_experiment(experiment)? {

@@ -1918,6 +1918,69 @@ impl Store {
         Ok(true)
     }
 
+    /// Running tickets whose latest run ended, whose chat was asked for a report
+    /// at least `grace_ms` before `now`, and that have nothing live, with that run.
+    pub fn overdue_reports(
+        &self,
+        now: i64,
+        grace_ms: i64,
+    ) -> Result<Vec<(Ticket, super::StoredRun)>> {
+        let mut overdue = Vec::new();
+        for ticket in self.tickets_in(&[TicketStatus::Running])? {
+            let Some(experiment) = &ticket.experiment_id else {
+                continue;
+            };
+            let Some(run) = self.latest_run_for_experiment(experiment)? else {
+                continue;
+            };
+            if run.ended_at.is_none() || !self.ticket_live_runs(&ticket)?.is_empty() {
+                continue;
+            }
+            let asked: Option<i64> = self.conn.query_row(
+                "SELECT MAX(d.at) FROM board_events e JOIN board_events d
+                   ON d.subject_id = e.subject_id AND d.kind = 'delivered'
+                  AND json_extract(d.detail_json, '$.eventId') = e.id
+                 WHERE e.subject_id = ?1 AND e.kind = 'run_ended'
+                   AND json_extract(e.detail_json, '$.runId') = ?2",
+                params![ticket.id, run.id],
+                |row| row.get(0),
+            )?;
+            if asked.is_some_and(|at| now - at >= grace_ms) {
+                overdue.push((ticket, run));
+            }
+        }
+        Ok(overdue)
+    }
+
+    /// Hands in a run's own result for a ticket whose agent never reported it,
+    /// so the ticket reaches the user's review instead of staying running.
+    pub fn file_run_result(&self, ticket: &Ticket, run: &super::StoredRun) -> Result<Ticket> {
+        let summary = run
+            .result_markdown
+            .as_deref()
+            .map(|text| text.chars().take(4000).collect::<String>());
+        let result = json!({
+            "filedBy": "board",
+            "runId": run.id,
+            "phase": run.status,
+            "exitCode": run.exit_code,
+            "summary": summary,
+        });
+        let conclusion = format!(
+            "The agent did not report within {} minutes of run {} ending ({}), so the board filed the run's own result. Challenge it to have the agent analyse the run.",
+            crate::board::brief::REPORT_GRACE_MS / 60_000,
+            run.id.chars().take(8).collect::<String>(),
+            run.status
+        );
+        self.report_ticket(
+            &ticket.id,
+            Outcome::Inconclusive,
+            &conclusion,
+            Some(&result),
+            &Actor::System(None),
+        )
+    }
+
     /// Logs `kind` on a ticket once; false when it was already logged.
     pub fn note_ticket_once(&self, ticket: &Ticket, kind: &str, detail: &Value) -> Result<bool> {
         let seen: bool = self.conn.query_row(
@@ -1974,7 +2037,14 @@ impl Store {
     pub fn undelivered_ticket_messages(&self) -> Result<Vec<(BoardEvent, Ticket)>> {
         let mut statement = self.conn.prepare(
             "SELECT e.id FROM board_events e JOIN board_tickets t ON t.id = e.subject_id
-             WHERE e.actor = 'user' AND e.kind IN ('answer', 'challenge', 'comment')
+             WHERE ((e.actor = 'user' AND e.kind IN ('answer', 'challenge', 'comment'))
+                    -- A run's end asks the chat for its report: only the latest end of a
+                    -- ticket still running, once nothing of its experiment is live.
+                    OR (e.kind = 'run_ended' AND t.status = 'running'
+                        AND e.id = (SELECT MAX(l.id) FROM board_events l
+                                    WHERE l.subject_id = e.subject_id AND l.kind = 'run_ended')
+                        AND NOT EXISTS(SELECT 1 FROM runs r WHERE r.experiment_id = t.experiment_id
+                                       AND r.ended_at IS NULL)))
                AND t.session_id IS NOT NULL
                AND NOT EXISTS(SELECT 1 FROM board_events d WHERE d.subject_id = e.subject_id
                               AND d.kind = 'delivered' AND json_extract(d.detail_json, '$.eventId') = e.id)
@@ -3509,6 +3579,86 @@ mod tests {
         assert!(store
             .record_ticket_run_end(&linked, "run-2", "failed")
             .unwrap());
+    }
+
+    fn run_row(
+        store: &Store,
+        id: &str,
+        experiment: &str,
+        project: &str,
+        started: i64,
+        ended: Option<i64>,
+    ) {
+        let status = if ended.is_some() { "done" } else { "running" };
+        store
+            .conn
+            .execute(
+                "INSERT INTO runs (id, experiment_id, project_id, status, backend_json, command,
+                                   created_at, updated_at, ended_at)
+                 VALUES (?1, ?2, ?3, ?4, '{}', 'python train.py', ?5, ?5, ?6)",
+                params![id, experiment, project, status, started, ended],
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn an_ended_run_asks_its_chat_for_a_report_and_the_board_files_it_when_none_comes() {
+        let (store, id, epic) = board_with_epic("Slot JEPA");
+        let ticket = running(&store, &id, &epic, "lr 3e-4");
+        store.bind_ticket_session(&ticket.id, "chat-7").unwrap();
+        store.link_ticket_experiment("chat-7", "exp-1").unwrap();
+        let ticket = store.require_ticket(&ticket.id).unwrap();
+
+        // The first try failed and the agent relaunched: no request while a run is live.
+        run_row(&store, "run-1", "exp-1", &id, 1, Some(2));
+        store
+            .record_ticket_run_end(&ticket, "run-1", "failed")
+            .unwrap();
+        run_row(&store, "run-2", "exp-1", &id, 3, None);
+        assert!(store.undelivered_ticket_messages().unwrap().is_empty());
+
+        store
+            .conn
+            .execute(
+                "UPDATE runs SET status = 'done', ended_at = 4 WHERE id = 'run-2'",
+                [],
+            )
+            .unwrap();
+        store
+            .record_ticket_run_end(&ticket, "run-2", "done")
+            .unwrap();
+        let pending = store.undelivered_ticket_messages().unwrap();
+        assert_eq!(pending.len(), 1, "only the latest end asks");
+        let (event, _) = &pending[0];
+        let text = crate::board::brief::user_message(&ticket, &event.kind, &event.detail).unwrap();
+        assert!(
+            text.contains("run-2") && text.contains("orx ticket report SJ-"),
+            "{text}"
+        );
+        assert!(
+            store.overdue_reports(now_ms(), 0).unwrap().is_empty(),
+            "not asked yet"
+        );
+
+        store
+            .mark_ticket_message_delivered(&ticket, event.id, "chat-7")
+            .unwrap();
+        assert!(store.undelivered_ticket_messages().unwrap().is_empty());
+        let grace = crate::board::brief::REPORT_GRACE_MS;
+        assert!(store.overdue_reports(now_ms(), grace).unwrap().is_empty());
+        let overdue = store.overdue_reports(now_ms() + grace, grace).unwrap();
+        assert_eq!(overdue.len(), 1);
+
+        let (late, run) = &overdue[0];
+        let filed = store.file_run_result(late, run).unwrap();
+        assert_eq!(filed.status, TicketStatus::Review);
+        assert_eq!(filed.outcome, Some(Outcome::Inconclusive));
+        assert_eq!(filed.result.as_ref().unwrap()["runId"], "run-2");
+        assert_eq!(cards(&store, &id, DecisionKind::AcceptOne).len(), 1);
+        assert!(store
+            .overdue_reports(now_ms() + grace, grace)
+            .unwrap()
+            .is_empty());
     }
 
     #[test]

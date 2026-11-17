@@ -115,9 +115,23 @@ pub fn user_message(ticket: &Ticket, kind: &str, detail: &serde_json::Value) -> 
             ticket.key,
             text("text")?
         )),
+        "run_ended" => Some(format!(
+            "[orx board] Run {run} of {key} ended ({phase}).\n\
+             If it settles the ticket, hand the result in now: `orx ticket report {key} --outcome supports|refutes|inconclusive --conclusion \"…\" --result-file result.json`.\n\
+             If you are fixing it and launching again, go ahead and report once the work is done.\n\
+             If no report comes within {grace} minutes of this chat going quiet, the board files the run's own result for review.",
+            run = text("runId")?,
+            key = ticket.key,
+            phase = text("phase").unwrap_or_else(|| "ended".into()),
+            grace = REPORT_GRACE_MS / 60_000,
+        )),
         _ => None,
     }
 }
+
+/// How long the board waits, after asking a quiet chat for its report, before
+/// filing the run's own result.
+pub const REPORT_GRACE_MS: i64 = 30 * 60_000;
 
 /// The block every turn of a ticket's chat carries, so the ticket survives compaction.
 pub fn turn_context(ticket: &Ticket, epic: Option<&Epic>, machine: Option<&Machine>) -> String {
