@@ -113,7 +113,7 @@ function Inbox({ onMachines }: { onMachines: () => void }) {
         <section className={CARD_CLASS_NAME}>
           {running.map((ticket) => (
             <div key={ticket.id} className={ROW_CLASS_NAME}>
-              <TicketLine ticket={ticket} project={ticket.projectName} />
+              <TicketLine ticket={ticket} project={ticket.projectName} gpus />
               <span className="ms-auto shrink-0 text-xs text-subtext">
                 {ticket.startedAt ? m.board_started_ago({ ago: timeAgo(ticket.startedAt) }) : null}
               </span>
@@ -126,7 +126,22 @@ function Inbox({ onMachines }: { onMachines: () => void }) {
   );
 }
 
-function TicketLine({ ticket, project }: { ticket: BoardTicketSummary; project?: string | null }) {
+/** How many GPUs a ticket takes and, while it holds them, on which machine. */
+function GpuLine({ ticket }: { ticket: BoardTicketSummary }) {
+  const { queries } = useWorkspace();
+  const machines = useQuery(queries.getBoardMachinesQuery());
+  if (ticket.needsGpus <= 0) return null;
+  const holds = (ticket.status === "running" || ticket.status === "waiting") && ticket.machineId;
+  const machine = holds ? machines.data?.find((candidate) => candidate.id === ticket.machineId) : undefined;
+  return (
+    <div className="mt-0.5 text-xs text-subtext">
+      {m.board_gpus({ count: fmtNumber(ticket.needsGpus) })}
+      {machine && <> · <span dir="auto">{machine.name}</span></>}
+    </div>
+  );
+}
+
+function TicketLine({ ticket, project, gpus = false }: { ticket: BoardTicketSummary; project?: string | null; gpus?: boolean }) {
   return (
     <div className="min-w-0">
       <div className="flex flex-wrap items-center gap-2 text-sm text-text">
@@ -137,6 +152,7 @@ function TicketLine({ ticket, project }: { ticket: BoardTicketSummary; project?:
         {ticket.proposedBy === "user-chat" && <Badge size="small">{m.board_unplanned()}</Badge>}
       </div>
       {project && <div className="mt-0.5 text-xs text-subtext" dir="auto">{project}</div>}
+      {gpus && <GpuLine ticket={ticket} />}
       {ticket.hypothesis && ticket.status === "proposed" && (
         <p className="mt-1 mb-0 text-sm text-text" dir="auto">{ticket.hypothesis}</p>
       )}
@@ -225,7 +241,7 @@ function Checklist({ card, selected, onToggle, render }: { card: BoardInboxCard;
         <label key={ticket.id} className={`${ROW_CLASS_NAME} cursor-pointer`}>
           <input type="checkbox" className="mt-1" checked={selected.has(ticket.id)} onChange={() => onToggle(ticket.id)} />
           <div className="min-w-0 flex-1">
-            <TicketLine ticket={ticket} />
+            <TicketLine ticket={ticket} gpus />
             {render?.(ticket)}
           </div>
         </label>
@@ -256,7 +272,6 @@ function DecisionCard({ card, actions }: { card: BoardInboxCard; actions: Action
           <Checklist card={card} selected={selected} onToggle={toggle} render={(row) => (
             <div className="mt-1 text-xs text-subtext">
               {row.estMinutes !== null && m.board_estimate({ minutes: fmtNumber(row.estMinutes) })}
-              {row.needsGpus > 0 && <> · {m.board_gpus({ count: fmtNumber(row.needsGpus) })}</>}
             </div>
           )} />
           <div className="flex flex-wrap gap-2">
@@ -296,7 +311,7 @@ function DecisionCard({ card, actions }: { card: BoardInboxCard; actions: Action
       body = ticket && (
         <>
           <CardHeading card={card} title={m.board_card_accept_one_title()} />
-          <TicketLine ticket={ticket} />
+          <TicketLine ticket={ticket} gpus />
           <VerdictLine verdict={decision.payload.verdicts?.[ticket.id]} />
           <div className="mt-3 flex flex-wrap gap-2">
             <Button variant="primary" disabled={busy} onClick={() => resolve({ option: "accept" })}>{m.board_accept()}</Button>
@@ -316,6 +331,7 @@ function DecisionCard({ card, actions }: { card: BoardInboxCard; actions: Action
       body = ticket && (
         <>
           <CardHeading card={card} title={m.board_card_question_title({ key: ltr(ticket.key) })} />
+          <GpuLine ticket={ticket} />
           <p className="mt-0 mb-3 text-sm text-text whitespace-pre-wrap" dir="auto">{decision.payload.question}</p>
           <div className="flex flex-col items-start gap-2">
             {(decision.payload.options ?? []).map((option) => (
@@ -339,7 +355,7 @@ function DecisionCard({ card, actions }: { card: BoardInboxCard; actions: Action
       body = ticket && (
         <>
           <CardHeading card={card} title={m.board_card_blocked_title({ key: ltr(ticket.key) })} />
-          <TicketLine ticket={ticket} />
+          <TicketLine ticket={ticket} gpus />
           {decision.payload.reason && <p className="mt-2 mb-3 text-sm text-text" dir="auto">{decision.payload.reason}</p>}
           <div className="flex flex-wrap gap-2">
             <Button variant="primary" disabled={busy} onClick={() => resolve({ option: "unblock" })}>{m.board_unblock()}</Button>

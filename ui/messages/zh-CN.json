@@ -2223,7 +2223,7 @@
   "chat_inbox_mark_done": "标记为完成",
   "chat_inbox_restore": "恢复",
   "chat_inbox_done_empty": "标记为完成的对话会显示在这里。",
-  "board_nav": "研究看板",
+  "board_nav": "看板",
   "board_title": "研究看板",
   "board_description": "智能体在这里提议实验，并运行你批准的那些。结果、提问和受阻的工作在下方等你处理。",
   "board_tab_inbox": "待你处理",

@@ -2223,7 +2223,7 @@
   "chat_inbox_mark_done": "完了にする",
   "chat_inbox_restore": "復元",
   "chat_inbox_done_empty": "完了にしたチャットがここに表示されます。",
-  "board_nav": "研究ボード",
+  "board_nav": "ボード",
   "board_title": "研究ボード",
   "board_description": "エージェントがここで実験を提案し、承認されたものを実行します。結果、質問、停止中の作業は下で対応を待っています。",
   "board_tab_inbox": "対応待ち",

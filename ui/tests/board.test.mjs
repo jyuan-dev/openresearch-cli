@@ -204,3 +204,24 @@ test("a blocked ticket can be pinned to the machine where its data is", async ()
   await settle();
   assert.deepEqual(writes, [{ path: "/api/board/tickets/t1/pin", body: { machine: "n50" } }]);
 });
+
+test("waiting and running tickets say how many GPUs they take and where they hold them", async () => {
+  const machine = (id, name) => ({ machine: { id, name, backend: `ssh:${name}`, gpuSlots: 4, own: true, enabled: true }, inUse: 0 });
+  const asked = ticket("t1", "IJ-320", "actor sweep", { status: "waiting", needsGpus: 2, machineId: "n49" });
+  const proposed = ticket("t2", "IJ-321", "renderer ablation", { needsGpus: 3 });
+  const live = { ...ticket("t3", "SJ-051", "role decoder", { status: "running", needsGpus: 4, machineId: "n50" }), projectName: "Slot-JEPA" };
+  const notes = { ...ticket("t4", "SJ-054", "write-up", { kind: "analysis", status: "running", needsGpus: 0 }), projectName: "Slot-JEPA" };
+  await openBoard({
+    machines: [machine("n49", "Node49"), machine("n50", "Node50")],
+    decisions: [
+      card({ id: "d1", kind: "question", payload: { question: "Which split?", options: ["val", "test"] } }, [asked]),
+      card({ id: "d2", kind: "approve_batch" }, [proposed]),
+    ],
+    running: [live, notes],
+  });
+  const text = document.body.textContent;
+  assert.ok(text.includes(`${m.board_gpus({ count: "2" })} · Node49`), "a waiting ticket names the machine holding its GPUs");
+  assert.ok(text.includes(m.board_gpus({ count: "3" })), "a proposal shows what it would take");
+  assert.ok(text.includes(`${m.board_gpus({ count: "4" })} · Node50`), "a running ticket names its machine");
+  assert.ok(!text.includes(m.board_gpus({ count: "0" })), "work without GPUs shows no GPU line");
+});

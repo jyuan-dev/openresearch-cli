@@ -2223,7 +2223,7 @@
   "chat_inbox_mark_done": "완료로 표시",
   "chat_inbox_restore": "복원",
   "chat_inbox_done_empty": "완료로 표시한 채팅이 여기에 표시됩니다.",
-  "board_nav": "연구 보드",
+  "board_nav": "보드",
   "board_title": "연구 보드",
   "board_description": "에이전트가 여기에서 실험을 제안하고 승인한 실험을 실행합니다. 결과, 질문, 막힌 작업은 아래에서 확인을 기다립니다.",
   "board_tab_inbox": "확인 대기",

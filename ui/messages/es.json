@@ -2223,7 +2223,7 @@
   "chat_inbox_mark_done": "Marcar como hecho",
   "chat_inbox_restore": "Restaurar",
   "chat_inbox_done_empty": "Aquí aparecen los chats que marques como hechos.",
-  "board_nav": "Tablero de investigación",
+  "board_nav": "Tablero",
   "board_title": "Tablero de investigación",
   "board_description": "Aquí los agentes proponen experimentos y ejecutan los que apruebes. Los resultados, las preguntas y el trabajo bloqueado te esperan abajo.",
   "board_tab_inbox": "Pendiente para ti",

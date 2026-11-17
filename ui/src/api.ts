@@ -2025,7 +2025,7 @@ export interface BoardDecision {
   createdAt: number;
 }
 
-export type BoardTicketSummary = Pick<BoardTicket, "id" | "key" | "title" | "kind" | "status" | "outcome" | "conclusion" | "hypothesis" | "estMinutes" | "needsGpus" | "startedAt" | "sessionId" | "projectId" | "experimentId" | "result"> & Partial<Pick<BoardTicket, "proposedBy">>;
+export type BoardTicketSummary = Pick<BoardTicket, "id" | "key" | "title" | "kind" | "status" | "outcome" | "conclusion" | "hypothesis" | "estMinutes" | "needsGpus" | "startedAt" | "sessionId" | "projectId" | "experimentId" | "result"> & Partial<Pick<BoardTicket, "proposedBy" | "machineId">>;
 
 export interface BoardInboxCard {
   decision: BoardDecision;

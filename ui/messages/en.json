@@ -2223,7 +2223,7 @@
   "chat_inbox_mark_done": "Mark as done",
   "chat_inbox_restore": "Restore",
   "chat_inbox_done_empty": "Chats you mark as done appear here.",
-  "board_nav": "Research board",
+  "board_nav": "Board",
   "board_title": "Research board",
   "board_description": "Agents propose experiments here and run the ones you approve. Results, questions and blocked work wait for you below.",
   "board_tab_inbox": "Waiting for you",

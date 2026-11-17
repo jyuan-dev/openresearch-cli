@@ -454,6 +454,7 @@ fn ticket_summary(ticket: &Ticket) -> Value {
         "hypothesis": ticket.hypothesis, "estMinutes": ticket.est_minutes, "needsGpus": ticket.needs_gpus,
         "startedAt": ticket.started_at, "sessionId": ticket.session_id, "projectId": ticket.project_id,
         "experimentId": ticket.experiment_id, "result": ticket.result, "proposedBy": ticket.proposed_by,
+        "machineId": ticket.machine_id,
     })
 }
 
