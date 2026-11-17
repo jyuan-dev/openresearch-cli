@@ -2227,7 +2227,7 @@
   "board_title": "Research board",
   "board_description": "Agents propose experiments here and run the ones you approve. Results, questions and blocked work wait for you below.",
   "board_tab_inbox": "Waiting for you",
-  "board_tab_project": "This project",
+  "board_tab_project": "Projects",
   "board_tab_machines": "Machines",
   "board_gpus_heading": "GPU slots",
   "board_no_machines": "No machines yet. Tickets that need a GPU wait until you add one.",
@@ -2345,5 +2345,6 @@
   "folder_browser_hidden": "Show hidden folders",
   "folder_browser_choose": "Choose this folder",
   "folder_browser_git": "Git",
-  "folder_browser_open": "Open {name}"
+  "folder_browser_open": "Open {name}",
+  "board_project_pick": "Project"
 }

@@ -2227,7 +2227,7 @@
   "board_title": "تابلوی پژوهش",
   "board_description": "عامل‌ها اینجا آزمایش پیشنهاد می‌دهند و آن‌هایی را که تأیید کنید اجرا می‌کنند. نتایج، پرسش‌ها و کارهای متوقف‌شده پایین منتظر شما هستند.",
   "board_tab_inbox": "منتظر شما",
-  "board_tab_project": "این پروژه",
+  "board_tab_project": "پروژه‌ها",
   "board_tab_machines": "ماشین‌ها",
   "board_gpus_heading": "جایگاه‌های GPU",
   "board_no_machines": "هنوز ماشینی نیست. تیکت‌هایی که GPU لازم دارند تا وقتی ماشینی اضافه کنید منتظر می‌مانند.",
@@ -2345,5 +2345,6 @@
   "folder_browser_hidden": "نمایش پوشه‌های پنهان",
   "folder_browser_choose": "انتخاب این پوشه",
   "folder_browser_git": "Git",
-  "folder_browser_open": "باز کردن {name}"
+  "folder_browser_open": "باز کردن {name}",
+  "board_project_pick": "پروژه"
 }

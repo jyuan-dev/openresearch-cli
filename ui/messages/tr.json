@@ -2227,7 +2227,7 @@
   "board_title": "Araştırma panosu",
   "board_description": "Ajanlar burada deney önerir ve onayladıklarınızı çalıştırır. Sonuçlar, sorular ve durmuş işler aşağıda sizi bekler.",
   "board_tab_inbox": "Sizi bekleyenler",
-  "board_tab_project": "Bu proje",
+  "board_tab_project": "Projeler",
   "board_tab_machines": "Makineler",
   "board_gpus_heading": "GPU yuvaları",
   "board_no_machines": "Henüz makine yok. GPU gereken biletler siz bir makine ekleyene kadar bekler.",
@@ -2345,5 +2345,6 @@
   "folder_browser_hidden": "Gizli klasörleri göster",
   "folder_browser_choose": "Bu klasörü seç",
   "folder_browser_git": "Git",
-  "folder_browser_open": "{name} aç"
+  "folder_browser_open": "{name} aç",
+  "board_project_pick": "Proje"
 }

@@ -2227,7 +2227,7 @@
   "board_title": "研究ボード",
   "board_description": "エージェントがここで実験を提案し、承認されたものを実行します。結果、質問、停止中の作業は下で対応を待っています。",
   "board_tab_inbox": "対応待ち",
-  "board_tab_project": "このプロジェクト",
+  "board_tab_project": "プロジェクト",
   "board_tab_machines": "マシン",
   "board_gpus_heading": "GPU スロット",
   "board_no_machines": "マシンがまだありません。GPU が必要なチケットは、マシンを追加するまで待機します。",
@@ -2345,5 +2345,6 @@
   "folder_browser_hidden": "隠しフォルダーを表示",
   "folder_browser_choose": "このフォルダーを選択",
   "folder_browser_git": "Git",
-  "folder_browser_open": "{name} を開く"
+  "folder_browser_open": "{name} を開く",
+  "board_project_pick": "プロジェクト"
 }

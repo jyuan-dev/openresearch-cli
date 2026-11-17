@@ -2227,7 +2227,7 @@
   "board_title": "研究看板",
   "board_description": "智能体在这里提议实验，并运行你批准的那些。结果、提问和受阻的工作在下方等你处理。",
   "board_tab_inbox": "待你处理",
-  "board_tab_project": "本项目",
+  "board_tab_project": "项目",
   "board_tab_machines": "机器",
   "board_gpus_heading": "GPU 槽位",
   "board_no_machines": "还没有机器。需要 GPU 的 ticket 会一直等待，直到你添加一台。",
@@ -2345,5 +2345,6 @@
   "folder_browser_hidden": "显示隐藏文件夹",
   "folder_browser_choose": "选择此文件夹",
   "folder_browser_git": "Git",
-  "folder_browser_open": "打开 {name}"
+  "folder_browser_open": "打开 {name}",
+  "board_project_pick": "项目"
 }

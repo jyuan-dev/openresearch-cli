@@ -2227,7 +2227,7 @@
   "board_title": "لوحة البحث",
   "board_description": "يقترح الوكلاء التجارب هنا ويشغّلون ما توافق عليه. النتائج والأسئلة والأعمال المتوقفة تنتظرك أدناه.",
   "board_tab_inbox": "بانتظارك",
-  "board_tab_project": "هذا المشروع",
+  "board_tab_project": "المشاريع",
   "board_tab_machines": "الأجهزة",
   "board_gpus_heading": "خانات GPU",
   "board_no_machines": "لا توجد أجهزة بعد. التذاكر التي تحتاج إلى GPU تنتظر حتى تضيف جهازًا.",
@@ -2345,5 +2345,6 @@
   "folder_browser_hidden": "إظهار المجلدات المخفية",
   "folder_browser_choose": "اختيار هذا المجلد",
   "folder_browser_git": "Git",
-  "folder_browser_open": "فتح {name}"
+  "folder_browser_open": "فتح {name}",
+  "board_project_pick": "المشروع"
 }

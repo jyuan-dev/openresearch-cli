@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { MessageSquare, Trash2 } from "lucide-react";
+import { ChevronDown, ChevronRight, MessageSquare, Trash2 } from "lucide-react";
 import { createContext, useContext, useState, type ReactNode } from "react";
 import { m } from "../paraglide/messages.js";
 import { autoDir, fmtNumber, ltr } from "../i18n";
@@ -31,6 +31,8 @@ const OpenChatContext = createContext<(projectId: string, sessionId: string) => 
 /** The research board: what waits for the user across projects, this project's tickets, and the machines they run on. */
 export function BoardView({ projectId, onOpenChat }: { projectId: string; onOpenChat: (projectId: string, sessionId: string) => void }) {
   const [tab, setTab] = useState<Tab>("inbox");
+  // Starts on the open project; any other project's board is one pick away.
+  const [boardProject, setBoardProject] = useState(projectId);
   const tabs: [Tab, string][] = [
     ["inbox", m.board_tab_inbox()],
     ["project", m.board_tab_project()],
@@ -48,7 +50,12 @@ export function BoardView({ projectId, onOpenChat }: { projectId: string; onOpen
         ))}
       </div>
       <OpenChatContext value={onOpenChat}>
-        {tab === "inbox" ? <Inbox onMachines={() => setTab("machines")} /> : tab === "project" ? <ProjectBoard projectId={projectId} /> : <Machines />}
+        {tab === "inbox" ? <Inbox onMachines={() => setTab("machines")} /> : tab === "project" ? (
+          <>
+            <ProjectPicker value={boardProject} onChange={setBoardProject} />
+            <ProjectBoard key={boardProject} projectId={boardProject} />
+          </>
+        ) : <Machines />}
       </OpenChatContext>
     </div>
   );
@@ -478,12 +485,30 @@ function ImportBody({ card, busy, onResolve }: { card: BoardInboxCard; busy: boo
 
 const COLUMNS: BoardTicketStatus[][] = [["proposed"], ["ready"], ["running", "waiting"], ["review", "blocked"], ["done"]];
 
+function ProjectPicker({ value, onChange }: { value: string; onChange: (projectId: string) => void }) {
+  const { listProjectsQuery } = useWorkspace().queries;
+  const projects = useQuery(listProjectsQuery());
+  const rows = [...(projects.data ?? [])].sort((a, b) => a.name.localeCompare(b.name));
+  if (rows.length < 2) return null;
+  return (
+    <label className="mb-4 flex items-center gap-2 text-sm text-text">
+      <span className="font-medium">{m.board_project_pick()}</span>
+      <select className="min-w-0 max-w-full rounded-md border border-border bg-background px-2 py-1 text-sm" value={value} onChange={(event) => onChange(event.target.value)}>
+        {!rows.some((project) => project.id === value) && <option value={value}>{value}</option>}
+        {rows.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}
+      </select>
+    </label>
+  );
+}
+
 function ProjectBoard({ projectId }: { projectId: string }) {
   const { api, queries } = useWorkspace();
   const board = useQuery(queries.getProjectBoardQuery(projectId));
   const [open, setOpen] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  // Done tickets pile up; their column stays folded until asked for.
+  const [doneOpen, setDoneOpen] = useState(false);
   if (board.error) return <LoadError message={board.error.message} onRetry={() => void board.refetch()} />;
   if (!board.data) return <Loading />;
   const settings = board.data.board;
@@ -574,12 +599,23 @@ function ProjectBoard({ projectId }: { projectId: string }) {
         <div className="grid grid-cols-[repeat(auto-fill,minmax(11rem,1fr))] gap-3">
           {COLUMNS.map((statuses) => {
             const column = tickets.filter((ticket) => statuses.includes(ticket.status));
+            const foldable = statuses.includes("done");
+            const heading = (
+              <>
+                {statuses.map(statusLabel).join(" / ")} <span className="font-normal text-subtext">{fmtNumber(column.length)}</span>
+              </>
+            );
             return (
               <section key={statuses.join()} className="min-w-0 rounded-lg bg-surface p-2" aria-label={statuses.map(statusLabel).join(" / ")}>
                 <h3 className="mt-0 mb-2 px-1 text-sm font-semibold text-text">
-                  {statuses.map(statusLabel).join(" / ")} <span className="font-normal text-subtext">{fmtNumber(column.length)}</span>
+                  {foldable ? (
+                    <button type="button" className="flex w-full items-center gap-1 border-0 bg-transparent p-0 text-start text-sm font-semibold text-text" aria-expanded={doneOpen} onClick={() => setDoneOpen(!doneOpen)}>
+                      {doneOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                      {heading}
+                    </button>
+                  ) : heading}
                 </h3>
-                {column.map((ticket) => (
+                {(!foldable || doneOpen) && column.map((ticket) => (
                   <button key={ticket.id} className="mb-2 block w-full rounded-md border border-border bg-background p-2 text-start hover:bg-hover-subtle focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-focus focus-visible:outline-offset-2" aria-expanded={open === ticket.id} onClick={() => setOpen(open === ticket.id ? null : ticket.id)}>
                     <div className="flex items-center gap-1.5">
                       <span className="font-mono text-xs text-subtext">{ltr(ticket.key)}</span>

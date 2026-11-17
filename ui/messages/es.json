@@ -2227,7 +2227,7 @@
   "board_title": "Tablero de investigación",
   "board_description": "Aquí los agentes proponen experimentos y ejecutan los que apruebes. Los resultados, las preguntas y el trabajo bloqueado te esperan abajo.",
   "board_tab_inbox": "Pendiente para ti",
-  "board_tab_project": "Este proyecto",
+  "board_tab_project": "Proyectos",
   "board_tab_machines": "Máquinas",
   "board_gpus_heading": "Ranuras de GPU",
   "board_no_machines": "Aún no hay máquinas. Los tickets que necesitan GPU esperan hasta que añadas una.",
@@ -2345,5 +2345,6 @@
   "folder_browser_hidden": "Mostrar carpetas ocultas",
   "folder_browser_choose": "Elegir esta carpeta",
   "folder_browser_git": "Git",
-  "folder_browser_open": "Abrir {name}"
+  "folder_browser_open": "Abrir {name}",
+  "board_project_pick": "Proyecto"
 }

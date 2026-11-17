@@ -2227,7 +2227,7 @@
   "board_title": "Tablica badań",
   "board_description": "Tutaj agenci proponują eksperymenty i uruchamiają te, które zatwierdzisz. Wyniki, pytania i zablokowana praca czekają na ciebie poniżej.",
   "board_tab_inbox": "Czeka na ciebie",
-  "board_tab_project": "Ten projekt",
+  "board_tab_project": "Projekty",
   "board_tab_machines": "Maszyny",
   "board_gpus_heading": "Sloty GPU",
   "board_no_machines": "Nie ma jeszcze maszyn. Tickety wymagające GPU czekają, aż dodasz maszynę.",
@@ -2345,5 +2345,6 @@
   "folder_browser_hidden": "Pokaż ukryte foldery",
   "folder_browser_choose": "Wybierz ten folder",
   "folder_browser_git": "Git",
-  "folder_browser_open": "Otwórz {name}"
+  "folder_browser_open": "Otwórz {name}",
+  "board_project_pick": "Projekt"
 }

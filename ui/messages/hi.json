@@ -2227,7 +2227,7 @@
   "board_title": "शोध बोर्ड",
   "board_description": "एजेंट यहाँ प्रयोग सुझाते हैं और आपकी मंज़ूरी वाले प्रयोग चलाते हैं। नतीजे, सवाल और रुका हुआ काम नीचे आपका इंतज़ार कर रहे हैं।",
   "board_tab_inbox": "आपके लिए बाकी",
-  "board_tab_project": "यह प्रोजेक्ट",
+  "board_tab_project": "प्रोजेक्ट",
   "board_tab_machines": "मशीनें",
   "board_gpus_heading": "GPU स्लॉट",
   "board_no_machines": "अभी कोई मशीन नहीं है। GPU वाले टिकट तब तक इंतज़ार करेंगे जब तक आप मशीन नहीं जोड़ते।",
@@ -2345,5 +2345,6 @@
   "folder_browser_hidden": "छिपे फ़ोल्डर दिखाएँ",
   "folder_browser_choose": "यह फ़ोल्डर चुनें",
   "folder_browser_git": "Git",
-  "folder_browser_open": "{name} खोलें"
+  "folder_browser_open": "{name} खोलें",
+  "board_project_pick": "प्रोजेक्ट"
 }

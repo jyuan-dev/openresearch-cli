@@ -2227,7 +2227,7 @@
   "board_title": "연구 보드",
   "board_description": "에이전트가 여기에서 실험을 제안하고 승인한 실험을 실행합니다. 결과, 질문, 막힌 작업은 아래에서 확인을 기다립니다.",
   "board_tab_inbox": "확인 대기",
-  "board_tab_project": "이 프로젝트",
+  "board_tab_project": "프로젝트",
   "board_tab_machines": "머신",
   "board_gpus_heading": "GPU 슬롯",
   "board_no_machines": "아직 머신이 없습니다. GPU가 필요한 티켓은 머신을 추가할 때까지 대기합니다.",
@@ -2345,5 +2345,6 @@
   "folder_browser_hidden": "숨김 폴더 표시",
   "folder_browser_choose": "이 폴더 선택",
   "folder_browser_git": "Git",
-  "folder_browser_open": "{name} 열기"
+  "folder_browser_open": "{name} 열기",
+  "board_project_pick": "프로젝트"
 }

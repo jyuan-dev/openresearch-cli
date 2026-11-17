@@ -2227,7 +2227,7 @@
   "board_title": "Исследовательская доска",
   "board_description": "Здесь агенты предлагают эксперименты и запускают те, что вы одобрили. Результаты, вопросы и остановленная работа ждут вас ниже.",
   "board_tab_inbox": "Ждёт вас",
-  "board_tab_project": "Этот проект",
+  "board_tab_project": "Проекты",
   "board_tab_machines": "Машины",
   "board_gpus_heading": "Слоты GPU",
   "board_no_machines": "Машин пока нет. Тикеты, которым нужен GPU, ждут, пока вы не добавите машину.",
@@ -2345,5 +2345,6 @@
   "folder_browser_hidden": "Показывать скрытые папки",
   "folder_browser_choose": "Выбрать эту папку",
   "folder_browser_git": "Git",
-  "folder_browser_open": "Открыть {name}"
+  "folder_browser_open": "Открыть {name}",
+  "board_project_pick": "Проект"
 }

@@ -225,3 +225,40 @@ test("waiting and running tickets say how many GPUs they take and where they hol
   assert.ok(text.includes(`${m.board_gpus({ count: "4" })} · Node50`), "a running ticket names its machine");
   assert.ok(!text.includes(m.board_gpus({ count: "0" })), "work without GPUs shows no GPU line");
 });
+
+test("the projects tab switches between project boards and keeps done tickets folded until asked", async () => {
+  const boardOf = (prefix, tickets) => ({
+    board: { projectId: prefix, enabled: true, priority: 100, confidential: true, keyPrefix: prefix },
+    epics: [],
+    tickets,
+  });
+  await openBoard({
+    board: boardOf("SJ", [
+      ticket("t1", "SJ-001", "lr sweep", { status: "ready" }),
+      ticket("t2", "SJ-002", "old baseline", { status: "done" }),
+    ]),
+    extraRoutes: {
+      "GET /api/projects": () => ({ projects: [{ id: "p", name: "Slot-JEPA" }, { id: "ij", name: "INTACT-JEPA" }] }),
+      "GET /api/board/projects/ij": () => boardOf("IJ", [ticket("t3", "IJ-309", "phase 0b", { status: "running", projectId: "ij" })]),
+    },
+  });
+  await click(find('[role="tab"]', m.board_tab_project()));
+  const select = find("label", m.board_project_pick()).querySelector("select");
+  assert.equal(select.value, "p", "starts on the open project");
+  assert.deepEqual([...select.options].map((option) => option.textContent), ["INTACT-JEPA", "Slot-JEPA"]);
+  assert.ok(document.body.textContent.includes("SJ-001"));
+
+  const done = find("button[aria-expanded]", m.board_status_done());
+  assert.equal(done.getAttribute("aria-expanded"), "false");
+  assert.ok(!document.body.textContent.includes("SJ-002"), "done tickets start folded");
+  await click(done);
+  assert.ok(document.body.textContent.includes("SJ-002"), "unfolding shows them");
+
+  await act(async () => {
+    select.value = "ij";
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  await settle();
+  assert.ok(document.body.textContent.includes("IJ-309"), "another project's tickets");
+  assert.ok(!document.body.textContent.includes("SJ-001"));
+});
