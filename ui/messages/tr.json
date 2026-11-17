@@ -2337,5 +2337,13 @@
   "board_load_error": "Pano yüklenemedi: {message}",
   "board_pin_label": "Çalıştığı makine",
   "board_pin_any": "Herhangi bir makine (zamanlayıcı seçer)",
-  "board_pin_holds": "GPU'ları {name} üzerinde tutuyor"
+  "board_pin_holds": "GPU'ları {name} üzerinde tutuyor",
+  "folder_browser_label": "Bu makinedeki klasörler",
+  "folder_browser_up": "Yukarı",
+  "folder_browser_home": "Ana klasör",
+  "folder_browser_empty": "Burada klasör yok.",
+  "folder_browser_hidden": "Gizli klasörleri göster",
+  "folder_browser_choose": "Bu klasörü seç",
+  "folder_browser_git": "Git",
+  "folder_browser_open": "{name} aç"
 }

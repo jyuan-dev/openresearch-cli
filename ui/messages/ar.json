@@ -2337,5 +2337,13 @@
   "board_load_error": "تعذّر تحميل اللوحة: {message}",
   "board_pin_label": "يعمل على",
   "board_pin_any": "أي جهاز (يختاره المُجدول)",
-  "board_pin_holds": "يحجز وحدات GPU على {name}"
+  "board_pin_holds": "يحجز وحدات GPU على {name}",
+  "folder_browser_label": "المجلدات على هذا الجهاز",
+  "folder_browser_up": "لأعلى",
+  "folder_browser_home": "المجلد الرئيسي",
+  "folder_browser_empty": "لا توجد مجلدات هنا.",
+  "folder_browser_hidden": "إظهار المجلدات المخفية",
+  "folder_browser_choose": "اختيار هذا المجلد",
+  "folder_browser_git": "Git",
+  "folder_browser_open": "فتح {name}"
 }

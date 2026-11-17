@@ -2337,5 +2337,13 @@
   "board_load_error": "ボードを読み込めませんでした: {message}",
   "board_pin_label": "実行マシン",
   "board_pin_any": "任意のマシン（スケジューラが選択）",
-  "board_pin_holds": "{name} の GPU を確保中"
+  "board_pin_holds": "{name} の GPU を確保中",
+  "folder_browser_label": "このマシンのフォルダー",
+  "folder_browser_up": "上へ",
+  "folder_browser_home": "ホーム",
+  "folder_browser_empty": "フォルダーがありません。",
+  "folder_browser_hidden": "隠しフォルダーを表示",
+  "folder_browser_choose": "このフォルダーを選択",
+  "folder_browser_git": "Git",
+  "folder_browser_open": "{name} を開く"
 }

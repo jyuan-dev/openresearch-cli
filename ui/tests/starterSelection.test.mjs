@@ -32,7 +32,7 @@ test("project creation and debounced prewarm use the current selection, else the
     if (path.startsWith("/api/project-path/status?")) {
       return { gitVersion: "2.50.0", resolvedPath: "/project", exists: true, directory: true, empty: false, initialized: true, gitState: "ready" };
     }
-    if (path === "/api/project-path/pick") return { path: "/project" };
+    if (path.startsWith("/api/project-path/browse")) return { path: "/project", parent: "/", home: "/project", git: true, folders: [] };
     if (path === "/api/projects/starter-prompts/prewarm") {
       warmed.push(JSON.parse(init.body).starterAgent);
       return { ok: true };
@@ -48,6 +48,8 @@ test("project creation and debounced prewarm use the current selection, else the
   await advance();
   await act(async () => find("button", m.new_project_form_existing_folder()).click());
   await act(async () => document.querySelector(`button[aria-label="${m.new_project_choose_existing_folder()}"]`).click());
+  await advance();
+  await act(async () => find("button", m.folder_browser_choose()).click());
   await advance(200);
 
   const custom = { harness: "opencode", model: "my-provider/custom-model", permissionMode: null, reasoningLevel: null };

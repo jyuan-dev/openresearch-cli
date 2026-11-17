@@ -2337,5 +2337,13 @@
   "board_load_error": "बोर्ड लोड नहीं हो सका: {message}",
   "board_pin_label": "किस मशीन पर चले",
   "board_pin_any": "कोई भी मशीन (शेड्यूलर चुनेगा)",
-  "board_pin_holds": "{name} पर GPU रोके हुए है"
+  "board_pin_holds": "{name} पर GPU रोके हुए है",
+  "folder_browser_label": "इस मशीन के फ़ोल्डर",
+  "folder_browser_up": "ऊपर",
+  "folder_browser_home": "होम",
+  "folder_browser_empty": "यहाँ कोई फ़ोल्डर नहीं है।",
+  "folder_browser_hidden": "छिपे फ़ोल्डर दिखाएँ",
+  "folder_browser_choose": "यह फ़ोल्डर चुनें",
+  "folder_browser_git": "Git",
+  "folder_browser_open": "{name} खोलें"
 }

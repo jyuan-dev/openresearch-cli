@@ -53,6 +53,7 @@ mod agent_tools;
 pub(crate) mod api_v2;
 mod board;
 pub(crate) mod compute_settings;
+mod folders;
 mod harness_setup;
 pub(crate) mod model_feed;
 mod network;
@@ -666,6 +667,7 @@ fn launch_admission(
 fn router(state: AppState, remote_auth: Option<RemoteAuth>, reach: up_remote::Reach) -> Router {
     let app = Router::new()
         .merge(board::routes())
+        .merge(folders::routes())
         .route("/api/health", get(health))
         .route("/api/search", get(search::search))
         .route("/api/file-manager", get(file_manager))

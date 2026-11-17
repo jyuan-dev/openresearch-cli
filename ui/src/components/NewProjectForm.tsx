@@ -12,6 +12,7 @@ import { ChevronDown, ChevronRight, CircleAlert, FolderOpen } from "lucide-react
 import { type PaperHit, type Project, type ResolvedPaper, type AgentSelection } from "../api";
 import { Button, SEGMENTED_CLASS_NAME } from "./ui";
 import { PaperTitle } from "./PaperTitle";
+import { FolderBrowser } from "./FolderBrowser";
 import { defaultSelection } from "./ModelPicker";
 
 export function useDebouncedValue(value: string, delay: number) {
@@ -89,7 +90,7 @@ export function NewProjectForm({
     resolvePaperQuery,
   } = useWorkspace().queries;
   const workspace = useWorkspace();
-  const { pickProjectFolder, prewarmStarterPrompts } = workspace.api;
+  const { prewarmStarterPrompts } = workspace.api;
   const { queryClient } = workspace;
 
   const { data: harnesses = [] } = useQuery(getHarnessesQuery());
@@ -103,7 +104,7 @@ export function NewProjectForm({
   const [nameTouched, setNameTouched] = useState(false);
   const [path, setPath] = useState("");
   const [pathTouched, setPathTouched] = useState(false);
-  const [pickingFolder, setPickingFolder] = useState(false);
+  const [browsingFolder, setBrowsingFolder] = useState(false);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [advancedOpen, setAdvancedOpen] = useState(false);
@@ -114,7 +115,6 @@ export function NewProjectForm({
   const [paper, setPaper] = useState<ResolvedPaper | null>(null);
   const [choosingPaper, setChoosingPaper] = useState(false);
   const seq = useRef(0);
-  const folderPickSeq = useRef(0);
   const drafts = useRef<Record<Mode, ProjectDraft>>({
     blank: { name: "", nameTouched: false, path: "", pathTouched: false },
     folder: { name: "", nameTouched: false, path: "", pathTouched: false },
@@ -198,11 +198,10 @@ export function NewProjectForm({
   function changePaper() {
     setPaperFromLink(false);
     seq.current += 1;
-    folderPickSeq.current += 1;
     setPaper(null);
     setPaperQuery("");
     setChoosingPaper(false);
-    setPickingFolder(false);
+    setBrowsingFolder(false);
     setPath("");
     setPathTouched(false);
     drafts.current.paper = {
@@ -217,40 +216,27 @@ export function NewProjectForm({
   function chooseMode(next: Mode) {
     if (next === mode) return;
     seq.current += 1;
-    folderPickSeq.current += 1;
     drafts.current[mode] = { name, nameTouched, path, pathTouched };
     const nextDraft = drafts.current[next];
     setMode(next);
     setError(null);
     setChoosingPaper(false);
-    setPickingFolder(false);
+    setBrowsingFolder(false);
     setName(nextDraft.name);
     setNameTouched(nextDraft.nameTouched);
     setPath(nextDraft.path);
     setPathTouched(nextDraft.pathTouched);
   }
 
-  async function chooseLocalFolder() {
-    if (pickingFolder) return;
-    const request = ++folderPickSeq.current;
-    setPickingFolder(true);
+  function applyFolder(selected: string) {
+    setBrowsingFolder(false);
     setError(null);
-    try {
-      const selected = await pickProjectFolder();
-      if (request !== folderPickSeq.current || !selected) return;
-      setPathTouched(true);
-      setPath(selected);
-      void queryClient.invalidateQueries(getProjectPathStatusQuery(selected));
-      if (mode === "folder" && !nameTouched) {
-        const folderName = selected.replace(/[\\/]+$/, "").split(/[\\/]/).pop();
-        if (folderName) setName(folderName);
-      }
-    } catch (err) {
-      if (request === folderPickSeq.current) {
-        setError(err instanceof Error ? err.message : String(err));
-      }
-    } finally {
-      if (request === folderPickSeq.current) setPickingFolder(false);
+    setPathTouched(true);
+    setPath(selected);
+    void queryClient.invalidateQueries(getProjectPathStatusQuery(selected));
+    if (mode === "folder" && !nameTouched) {
+      const folderName = selected.replace(/[\\/]+$/, "").split(/[\\/]/).pop();
+      if (folderName) setName(folderName);
     }
   }
 
@@ -355,7 +341,7 @@ export function NewProjectForm({
   const canCreate =
     Boolean(name.trim() && projectPath.trim()) &&
     !pending &&
-    !pickingFolder &&
+    !browsingFolder &&
     !checkingPath &&
     pathStatus !== null &&
     !pathError &&
@@ -512,21 +498,26 @@ export function NewProjectForm({
               )}
             </label>
           ) : mode === "folder" && !remote ? (
+            <>
             <button
               data-initial-focus
               type="button"
               className="folder-picker-control"
               aria-label={path ? m.new_project_change_folder({ path: ltr(path) }) : m.new_project_choose_existing_folder()}
-              disabled={pickingFolder}
+              aria-expanded={browsingFolder}
               title={path || undefined}
-              onClick={() => void chooseLocalFolder()}
+              onClick={() => setBrowsingFolder(!browsingFolder)}
             >
               <FolderOpen className={path ? "folder-picker-icon" : "folder-picker-icon placeholder"} size={16} />
               <span className={path ? "text-sm" : "placeholder"}>
-                {pickingFolder ? m.new_project_choosing() : path || m.new_project_choose_existing_folder()}
+                {path || m.new_project_choose_existing_folder()}
               </span>
               <ChevronRight className="folder-picker-chevron" size={16} />
             </button>
+            {browsingFolder && (
+              <FolderBrowser start={path || undefined} onChoose={applyFolder} onCancel={() => setBrowsingFolder(false)} />
+            )}
+            </>
           ) : mode === "folder" ? (
             <label className="project-location-field">
               <span className="project-location-label !font-medium">{m.new_project_form_project_location()}</span>

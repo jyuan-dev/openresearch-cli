@@ -231,6 +231,15 @@ export interface ModelNudge {
 export type Autonomy = "copilot" | "agentic";
 export const DEFAULT_AUTONOMY: Autonomy = "agentic";
 
+/** A folder on the server's machine and its subfolders, for choosing a project folder. */
+export interface ProjectFolderListing {
+  path: string;
+  parent: string | null;
+  home: string | null;
+  git: boolean;
+  folders: { name: string; path: string; git: boolean }[];
+}
+
 export interface ProjectPathStatus {
   gitVersion: string | null;
   /** Only without a path: Windows with no Git, which `installGit` can fix. */
@@ -2422,6 +2431,14 @@ export function createApi(
 
   const installGit = () => post<Record<string, never>>("/api/git/install");
 
+  const browseProjectFolder = (path = "", hidden = false, signal?: AbortSignal) => {
+    const params = new URLSearchParams();
+    if (path) params.set("path", path);
+    if (hidden) params.set("hidden", "true");
+    const query = params.size ? `?${params}` : "";
+    return get<ProjectFolderListing>(`/api/project-path/browse${query}`, signal);
+  };
+
   const pickProjectFolder = () =>
     post<{ path: string | null }>("/api/project-path/pick").then((result) => result.path);
 
@@ -3486,6 +3503,7 @@ export function createApi(
     updateUiState,
     completeOnboarding,
     getProjectPathStatus,
+    browseProjectFolder,
     installGit,
     pickProjectFolder,
     createProject,

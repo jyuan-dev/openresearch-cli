@@ -39,6 +39,12 @@ export function createProjectQueries(client: WorkspaceClient, api: Api) {
     staleTime: 30_000,
   });
 
+  const getProjectFolderListingQuery = (path = "", hidden = false) => queryOptions({
+    queryKey: workspaceKey("browseProjectFolder", path, hidden),
+    queryFn: ({ signal }) => api.browseProjectFolder(path, hidden, signal),
+    staleTime: 10_000,
+  });
+
   const searchPapersQuery = (q: string) => queryOptions({
     queryKey: workspaceKey("searchPapers", q),
     queryFn: ({ signal }) => api.searchPapers(q, signal),
@@ -106,6 +112,7 @@ export function createProjectQueries(client: WorkspaceClient, api: Api) {
     getUiStateQuery,
     getProjectUiStateQuery,
     getProjectPathStatusQuery,
+    getProjectFolderListingQuery,
     searchPapersQuery,
     githubAccountQuery,
     githubOrganizationsQuery,

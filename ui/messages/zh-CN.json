@@ -2337,5 +2337,13 @@
   "board_load_error": "无法加载看板：{message}",
   "board_pin_label": "运行机器",
   "board_pin_any": "任意机器（由调度器选择）",
-  "board_pin_holds": "GPU 占用在 {name}"
+  "board_pin_holds": "GPU 占用在 {name}",
+  "folder_browser_label": "本机上的文件夹",
+  "folder_browser_up": "上一级",
+  "folder_browser_home": "主目录",
+  "folder_browser_empty": "这里没有文件夹。",
+  "folder_browser_hidden": "显示隐藏文件夹",
+  "folder_browser_choose": "选择此文件夹",
+  "folder_browser_git": "Git",
+  "folder_browser_open": "打开 {name}"
 }
