@@ -509,6 +509,8 @@ function ProjectBoard({ projectId }: { projectId: string }) {
   const [notice, setNotice] = useState<string | null>(null);
   // Done tickets pile up; their column stays folded until asked for.
   const [doneOpen, setDoneOpen] = useState(false);
+  // So do answered and dropped questions; the open ones stay in view.
+  const [settledOpen, setSettledOpen] = useState(false);
   if (board.error) return <LoadError message={board.error.message} onRetry={() => void board.refetch()} />;
   if (!board.data) return <Loading />;
   const settings = board.data.board;
@@ -535,6 +537,18 @@ function ProjectBoard({ projectId }: { projectId: string }) {
   const settledEpics = new Set(epics.filter(({ epic }) => epic.status === "answered" || epic.status === "dropped").map(({ epic }) => epic.id));
   const tickets = board.data.tickets.filter((ticket) => !ticket.epicId || !settledEpics.has(ticket.epicId));
   const archived = board.data.tickets.length - tickets.length;
+  const epicRow = ({ epic, criteria }: (typeof epics)[number]) => (
+    <div key={epic.id} className={ROW_CLASS_NAME}>
+      <span className="font-mono text-xs text-subtext pt-0.5">{ltr(epic.key)}</span>
+      <div className="min-w-0">
+        <div className="text-sm font-medium text-text" dir="auto">{epic.title}</div>
+        {epic.question !== epic.title && <div className="text-sm text-subtext" dir="auto">{epic.question}</div>}
+      </div>
+      <span className="ms-auto shrink-0 text-xs text-subtext">
+        {epic.status === "answered" ? m.board_epic_answered() : epic.criteriaVersion > 0 ? m.board_criteria_version({ version: fmtNumber(epic.criteriaVersion) }) : criteria ? m.board_criteria_waiting() : m.board_criteria_none()}
+      </span>
+    </div>
+  );
   const closed = tickets.filter((ticket) => ticket.status === "rejected" || ticket.status === "cancelled").length;
   const draftImport = async () => {
     setError(null);
@@ -577,18 +591,14 @@ function ProjectBoard({ projectId }: { projectId: string }) {
         <p className={SUB_CLASS_NAME}>{m.board_no_epics()}</p>
       ) : (
         <section className={CARD_CLASS_NAME}>
-          {epics.map(({ epic, criteria }) => (
-            <div key={epic.id} className={ROW_CLASS_NAME}>
-              <span className="font-mono text-xs text-subtext pt-0.5">{ltr(epic.key)}</span>
-              <div className="min-w-0">
-                <div className="text-sm font-medium text-text" dir="auto">{epic.title}</div>
-                {epic.question !== epic.title && <div className="text-sm text-subtext" dir="auto">{epic.question}</div>}
-              </div>
-              <span className="ms-auto shrink-0 text-xs text-subtext">
-                {epic.status === "answered" ? m.board_epic_answered() : epic.criteriaVersion > 0 ? m.board_criteria_version({ version: fmtNumber(epic.criteriaVersion) }) : criteria ? m.board_criteria_waiting() : m.board_criteria_none()}
-              </span>
-            </div>
-          ))}
+          {epics.filter(({ epic }) => !settledEpics.has(epic.id)).map(epicRow)}
+          {settledEpics.size > 0 && (
+            <button type="button" className="flex w-full items-center gap-1 border-0 bg-transparent px-0 py-2 text-start text-sm text-subtext hover:text-text" aria-expanded={settledOpen} onClick={() => setSettledOpen(!settledOpen)}>
+              {settledOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+              {m.board_epics_settled({ count: fmtNumber(settledEpics.size) })}
+            </button>
+          )}
+          {settledOpen && epics.filter(({ epic }) => settledEpics.has(epic.id)).map(epicRow)}
         </section>
       )}
 

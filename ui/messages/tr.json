@@ -2346,5 +2346,6 @@
   "folder_browser_choose": "Bu klasörü seç",
   "folder_browser_git": "Git",
   "folder_browser_open": "{name} aç",
-  "board_project_pick": "Proje"
+  "board_project_pick": "Proje",
+  "board_epics_settled": "Yanıtlanan veya bırakılan: {count}"
 }

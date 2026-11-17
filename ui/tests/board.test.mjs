@@ -262,3 +262,19 @@ test("the projects tab switches between project boards and keeps done tickets fo
   assert.ok(document.body.textContent.includes("IJ-309"), "another project's tickets");
   assert.ok(!document.body.textContent.includes("SJ-001"));
 });
+
+test("answered and dropped research questions fold away while open ones stay listed", async () => {
+  const epic = (id, key, title, status) => ({ epic: { id, projectId: "p", key, title, question: title, status, criteriaVersion: 1, budgetGpuHours: null, conclusion: null }, criteria: null });
+  await openBoard({
+    board: {
+      board: { projectId: "p", enabled: true, priority: 100, confidential: true, keyPrefix: "SJ" },
+      epics: [epic("e1", "SJ-E1", "Role binding", "active"), epic("e2", "SJ-E2", "Baseline repro", "answered"), epic("e3", "SJ-E3", "Old route", "dropped")],
+      tickets: [],
+    },
+  });
+  await click(find('[role="tab"]', m.board_tab_project()));
+  assert.ok(document.body.textContent.includes("Role binding"));
+  assert.ok(!document.body.textContent.includes("Baseline repro") && !document.body.textContent.includes("Old route"));
+  await click(find("button[aria-expanded]", m.board_epics_settled({ count: "2" })));
+  assert.ok(document.body.textContent.includes("Baseline repro") && document.body.textContent.includes("Old route"));
+});

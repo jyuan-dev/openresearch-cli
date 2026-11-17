@@ -2346,5 +2346,6 @@
   "folder_browser_choose": "Выбрать эту папку",
   "folder_browser_git": "Git",
   "folder_browser_open": "Открыть {name}",
-  "board_project_pick": "Проект"
+  "board_project_pick": "Проект",
+  "board_epics_settled": "С ответом или отменённые: {count}"
 }

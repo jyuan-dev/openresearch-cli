@@ -2346,5 +2346,6 @@
   "folder_browser_choose": "انتخاب این پوشه",
   "folder_browser_git": "Git",
   "folder_browser_open": "باز کردن {name}",
-  "board_project_pick": "پروژه"
+  "board_project_pick": "پروژه",
+  "board_epics_settled": "پاسخ‌داده یا کنارگذاشته: {count}"
 }

@@ -2346,5 +2346,6 @@
   "folder_browser_choose": "اختيار هذا المجلد",
   "folder_browser_git": "Git",
   "folder_browser_open": "فتح {name}",
-  "board_project_pick": "المشروع"
+  "board_project_pick": "المشروع",
+  "board_epics_settled": "تمت الإجابة عنها أو أُسقطت: {count}"
 }

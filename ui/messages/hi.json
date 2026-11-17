@@ -2346,5 +2346,6 @@
   "folder_browser_choose": "यह फ़ोल्डर चुनें",
   "folder_browser_git": "Git",
   "folder_browser_open": "{name} खोलें",
-  "board_project_pick": "प्रोजेक्ट"
+  "board_project_pick": "प्रोजेक्ट",
+  "board_epics_settled": "उत्तरित या छोड़े गए: {count}"
 }
