@@ -2347,5 +2347,7 @@
   "folder_browser_git": "Git",
   "folder_browser_open": "{name} aç",
   "board_project_pick": "Proje",
-  "board_epics_settled": "Yanıtlanan veya bırakılan: {count}"
+  "board_epics_settled": "Yanıtlanan veya bırakılan: {count}",
+  "board_epic_topic": "Soru değil, konu",
+  "board_epic_topic_hint": "Bir araştırma sorusu deneylerin yanıtlayabileceği tek bir şey sorar, örneğin “X, Z'de Y'yi geçiyor mu?”. Yeniden yazın: orx epic edit {key} --question \"…?\""
 }

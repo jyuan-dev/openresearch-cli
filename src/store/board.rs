@@ -234,6 +234,23 @@ fn proposer(actor: &Actor) -> ProposedBy {
     }
 }
 
+/// True when `text` is phrased as a question, not a topic such as "Actor architectures".
+pub fn is_question(text: &str) -> bool {
+    let text = text.trim();
+    text.ends_with('?') || text.ends_with('\u{ff1f}')
+}
+
+fn require_question(question: &str) -> Result<()> {
+    if !is_question(question) {
+        bail!(
+            "An epic answers one research question that experiments can settle, so write it as a question \
+             (for example \"Does X beat Y on Z?\"), not as a topic: {:?}",
+            question.trim()
+        );
+    }
+    Ok(())
+}
+
 fn require_user(actor: &Actor, what: &str) -> Result<()> {
     if *actor != Actor::User {
         bail!("Only the user can {what}. Agents propose with `orx ticket propose` or ask with `orx ticket ask`.");
@@ -436,9 +453,10 @@ impl Store {
 
     pub fn create_epic(&self, new: &NewEpic, actor: &Actor) -> Result<Epic> {
         let board = self.require_board_project(&new.project_id)?;
-        if new.title.trim().is_empty() || new.question.trim().is_empty() {
+        if new.title.trim().is_empty() {
             bail!("An epic needs a title and the research question it answers.");
         }
+        require_question(&new.question)?;
         let tx = self.conn.unchecked_transaction()?;
         let seq: i64 = tx.query_row(
             "UPDATE board_projects SET next_epic = next_epic + 1 WHERE project_id = ?1
@@ -662,6 +680,65 @@ impl Store {
         )?;
         tx.commit()?;
         self.require_epic(&epic.id)
+    }
+
+    /// Rewrites an epic's title or question (user only). Rewording an open
+    /// question whose criteria are approved does not reopen them; the user
+    /// re-approves criteria if the meaning changed.
+    pub fn edit_epic(
+        &self,
+        epic_id: &str,
+        title: Option<&str>,
+        question: Option<&str>,
+        actor: &Actor,
+    ) -> Result<Epic> {
+        require_user(actor, "rewrite an epic")?;
+        let epic = self.require_epic(epic_id)?;
+        let title = title.map(str::trim).unwrap_or(&epic.title);
+        if title.is_empty() {
+            bail!("An epic needs a title.");
+        }
+        let question = match question {
+            Some(question) => {
+                require_question(question)?;
+                question.trim()
+            }
+            None => &epic.question,
+        };
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute(
+            "UPDATE board_epics SET title = ?2, question = ?3, updated_at = ?4 WHERE id = ?1",
+            params![epic.id, title, question, now_ms()],
+        )?;
+        Self::append_board_event(
+            &tx,
+            &epic.project_id,
+            &epic.id,
+            actor,
+            "epic_edited",
+            &json!({"title": title, "question": question, "was": {"title": epic.title, "question": epic.question}}),
+        )?;
+        tx.commit()?;
+        self.require_epic(&epic.id)
+    }
+
+    /// Closes an epic as answered: what was learned, and what changes because of it.
+    pub fn close_epic(
+        &self,
+        epic_id: &str,
+        conclusion: &str,
+        decision: &str,
+        actor: &Actor,
+    ) -> Result<Epic> {
+        let (conclusion, decision) = (conclusion.trim(), decision.trim());
+        if conclusion.is_empty() || decision.is_empty() {
+            bail!(
+                "Closing an epic records what you learned and what you decided because of it \
+                 (for example which path you keep or drop); give both."
+            );
+        }
+        let text = format!("{conclusion}\n\nDecision: {decision}");
+        self.set_epic_status(epic_id, EpicStatus::Answered, Some(&text), actor)
     }
 
     pub fn set_epic_status(
@@ -2791,6 +2868,70 @@ mod tests {
         store
             .approve_criteria(&epic.id, criteria.version, &Actor::User)
             .unwrap()
+    }
+
+    #[test]
+    fn an_epic_is_a_question_and_closing_it_records_a_decision() {
+        let (store, id, epic) = board_with_epic("Slot JEPA");
+        let topic = NewEpic {
+            project_id: id.clone(),
+            title: "Actor architectures".into(),
+            question: "Actor architectures".into(),
+            priority: 100,
+            budget_gpu_hours: None,
+            budget_deadline_ms: None,
+        };
+        let refused = store.create_epic(&topic, &agent()).unwrap_err().to_string();
+        assert!(refused.contains("write it as a question"), "{refused}");
+        assert!(store
+            .create_epic(
+                &NewEpic {
+                    question: "流匹配比扩散更好吗？".into(),
+                    ..topic.clone()
+                },
+                &agent()
+            )
+            .is_ok());
+
+        assert!(store
+            .edit_epic(&epic.id, None, Some("Does a wider actor help?"), &agent())
+            .is_err());
+        assert!(store
+            .edit_epic(&epic.id, None, Some("Learning rates"), &Actor::User)
+            .is_err());
+        let edited = store
+            .edit_epic(
+                &epic.id,
+                Some("LR"),
+                Some("Does LR 3e-4 converge fastest?"),
+                &Actor::User,
+            )
+            .unwrap();
+        assert_eq!(
+            (edited.title.as_str(), edited.question.as_str()),
+            ("LR", "Does LR 3e-4 converge fastest?")
+        );
+        assert_eq!(edited.criteria_version, epic.criteria_version);
+
+        assert!(store
+            .close_epic(&epic.id, "Yes, by 4%.", " ", &Actor::User)
+            .is_err());
+        assert!(store
+            .close_epic(&epic.id, "Yes, by 4%.", "Keep 3e-4.", &agent())
+            .is_err());
+        let closed = store
+            .close_epic(
+                &epic.id,
+                "Yes, by 4%.",
+                "Keep 3e-4 for all later runs.",
+                &Actor::User,
+            )
+            .unwrap();
+        assert_eq!(closed.status, EpicStatus::Answered);
+        assert_eq!(
+            closed.conclusion.as_deref(),
+            Some("Yes, by 4%.\n\nDecision: Keep 3e-4 for all later runs.")
+        );
     }
 
     #[test]

@@ -2347,5 +2347,7 @@
   "folder_browser_git": "Git",
   "folder_browser_open": "打开 {name}",
   "board_project_pick": "项目",
-  "board_epics_settled": "已回答或已放弃：{count}"
+  "board_epics_settled": "已回答或已放弃：{count}",
+  "board_epic_topic": "主题，不是问题",
+  "board_epic_topic_hint": "研究问题应当是实验能回答的一个问题，例如“X 在 Z 上是否优于 Y？”。改写：orx epic edit {key} --question \"…？\""
 }

@@ -174,11 +174,17 @@ pub struct EpicArgs {
 #[derive(Subcommand, Debug)]
 pub enum EpicCommand {
     /// Open a research question on a project's board.
+    ///
+    /// An epic is one thing you are trying to find out, phrased so experiments
+    /// can settle it ("Does X beat Y on Z?"), not a topic. Its answer criteria
+    /// are approved before any ticket under it runs, and closing it records a
+    /// conclusion and the decision it leads to.
     Add {
         project_id: String,
+        /// A short name for the board.
         #[arg(long)]
         title: String,
-        /// The research question this epic answers.
+        /// The research question, ending in "?": e.g. "Does a Riemannian adapter beat the Euclidean one on unseen starts?"
         #[arg(long)]
         question: String,
         #[arg(long, default_value_t = 100)]
@@ -214,11 +220,24 @@ pub enum EpicCommand {
         #[arg(long)]
         file: String,
     },
-    /// Close an answered epic with its conclusion.
-    Close {
+    /// Reword an epic's title or question (user only), e.g. to turn an imported topic into a question.
+    Edit {
         epic: String,
         #[arg(long)]
+        title: Option<String>,
+        /// The research question, ending in "?".
+        #[arg(long)]
+        question: Option<String>,
+    },
+    /// Close an answered epic: what was learned, and what changes because of it.
+    Close {
+        epic: String,
+        /// The answer, negative answers included.
+        #[arg(long)]
         conclusion: String,
+        /// What changes because of the answer, such as which path you keep or drop.
+        #[arg(long)]
+        decision: String,
     },
     /// Drop an epic that will not be pursued.
     Drop {
@@ -1009,9 +1028,21 @@ pub fn epic(args: EpicArgs) -> Result<()> {
                 .with_context(|| format!("{file} does not hold epic rules"))?;
             store.set_epic_rules(&epic, &rules, &actor)?
         }
-        EpicCommand::Close { epic, conclusion } => {
-            store.set_epic_status(&epic, EpicStatus::Answered, Some(&conclusion), &actor)?
+        EpicCommand::Edit {
+            epic,
+            title,
+            question,
+        } => {
+            if title.is_none() && question.is_none() {
+                bail!("Give a new `--title`, `--question` or both.");
+            }
+            store.edit_epic(&epic, title.as_deref(), question.as_deref(), &actor)?
         }
+        EpicCommand::Close {
+            epic,
+            conclusion,
+            decision,
+        } => store.close_epic(&epic, &conclusion, &decision, &actor)?,
         EpicCommand::Drop { epic, reason } => {
             store.set_epic_status(&epic, EpicStatus::Dropped, reason.as_deref(), &actor)?
         }

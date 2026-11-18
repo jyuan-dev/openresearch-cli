@@ -2347,5 +2347,7 @@
   "folder_browser_git": "Git",
   "folder_browser_open": "فتح {name}",
   "board_project_pick": "المشروع",
-  "board_epics_settled": "تمت الإجابة عنها أو أُسقطت: {count}"
+  "board_epics_settled": "تمت الإجابة عنها أو أُسقطت: {count}",
+  "board_epic_topic": "موضوع وليس سؤالًا",
+  "board_epic_topic_hint": "يسأل سؤال البحث عن أمر واحد يمكن للتجارب حسمه، مثل «هل يتفوّق X على Y في Z؟». أعد صياغته بـ: orx epic edit {key} --question \"…?\""
 }

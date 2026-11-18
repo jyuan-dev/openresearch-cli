@@ -2347,5 +2347,7 @@
   "folder_browser_git": "Git",
   "folder_browser_open": "Otwórz {name}",
   "board_project_pick": "Projekt",
-  "board_epics_settled": "Z odpowiedzią lub porzucone: {count}"
+  "board_epics_settled": "Z odpowiedzią lub porzucone: {count}",
+  "board_epic_topic": "Temat, nie pytanie",
+  "board_epic_topic_hint": "Pytanie badawcze dotyczy jednej rzeczy, którą eksperymenty mogą rozstrzygnąć, np. „Czy X pokonuje Y na Z?”. Przeredaguj: orx epic edit {key} --question \"…?\""
 }

@@ -278,3 +278,25 @@ test("answered and dropped research questions fold away while open ones stay lis
   await click(find("button[aria-expanded]", m.board_epics_settled({ count: "2" })));
   assert.ok(document.body.textContent.includes("Baseline repro") && document.body.textContent.includes("Old route"));
 });
+
+test("an imported topic is flagged as not a question and a closed one shows its decision", async () => {
+  const epic = (id, key, title, question, status, conclusion = null) => ({ epic: { id, projectId: "p", key, title, question, status, criteriaVersion: 1, budgetGpuHours: null, conclusion }, criteria: null });
+  await openBoard({
+    board: {
+      board: { projectId: "p", enabled: true, priority: 100, confidential: true, keyPrefix: "SJ" },
+      epics: [
+        epic("e1", "SJ-E1", "Actor architectures", "Actor architectures", "active"),
+        epic("e2", "SJ-E2", "Adapter", "Does the Riemannian adapter beat the Euclidean one?", "active"),
+        epic("e3", "SJ-E3", "LR", "Does LR 3e-4 converge fastest?", "answered", "Yes, by 4%.\n\nDecision: Keep 3e-4."),
+      ],
+      tickets: [],
+    },
+  });
+  await click(find('[role="tab"]', m.board_tab_project()));
+  const row = (key) => [...document.querySelectorAll("span.font-mono")].map((el) => el.parentElement).find((el) => el.textContent.includes(key));
+  assert.ok(row("SJ-E1").textContent.includes(m.board_epic_topic()));
+  assert.ok(!row("SJ-E2").textContent.includes(m.board_epic_topic()));
+  await click(find("button[aria-expanded]", m.board_epics_settled({ count: "1" })));
+  assert.ok(row("SJ-E3").textContent.includes("Decision: Keep 3e-4."));
+});
+

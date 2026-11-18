@@ -2347,5 +2347,7 @@
   "folder_browser_git": "Git",
   "folder_browser_open": "{name} खोलें",
   "board_project_pick": "प्रोजेक्ट",
-  "board_epics_settled": "उत्तरित या छोड़े गए: {count}"
+  "board_epics_settled": "उत्तरित या छोड़े गए: {count}",
+  "board_epic_topic": "विषय, प्रश्न नहीं",
+  "board_epic_topic_hint": "शोध प्रश्न एक ही बात पूछता है जिसे प्रयोग तय कर सकें, जैसे “क्या Z पर X, Y से बेहतर है?”। फिर से लिखें: orx epic edit {key} --question \"…?\""
 }

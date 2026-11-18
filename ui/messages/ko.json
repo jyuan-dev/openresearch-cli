@@ -2347,5 +2347,7 @@
   "folder_browser_git": "Git",
   "folder_browser_open": "{name} 열기",
   "board_project_pick": "프로젝트",
-  "board_epics_settled": "답변됨 또는 중단됨: {count}"
+  "board_epics_settled": "답변됨 또는 중단됨: {count}",
+  "board_epic_topic": "질문이 아닌 주제",
+  "board_epic_topic_hint": "연구 질문은 실험으로 판가름할 수 있는 한 가지를 묻습니다(예: “Z에서 X가 Y보다 나은가?”). 다시 쓰기: orx epic edit {key} --question \"…?\""
 }

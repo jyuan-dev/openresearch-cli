@@ -2347,5 +2347,7 @@
   "folder_browser_git": "Git",
   "folder_browser_open": "Open {name}",
   "board_project_pick": "Project",
-  "board_epics_settled": "Answered or dropped: {count}"
+  "board_epics_settled": "Answered or dropped: {count}",
+  "board_epic_topic": "Topic, not a question",
+  "board_epic_topic_hint": "A research question asks one thing experiments can settle, like “Does X beat Y on Z?”. Reword it with: orx epic edit {key} --question \"…?\""
 }

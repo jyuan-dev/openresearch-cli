@@ -2347,5 +2347,7 @@
   "folder_browser_git": "Git",
   "folder_browser_open": "Открыть {name}",
   "board_project_pick": "Проект",
-  "board_epics_settled": "С ответом или отменённые: {count}"
+  "board_epics_settled": "С ответом или отменённые: {count}",
+  "board_epic_topic": "Тема, а не вопрос",
+  "board_epic_topic_hint": "Исследовательский вопрос спрашивает об одном, что могут решить эксперименты, например «Превосходит ли X Y на Z?». Переформулируйте: orx epic edit {key} --question \"…?\""
 }

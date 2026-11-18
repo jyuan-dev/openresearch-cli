@@ -2347,5 +2347,7 @@
   "folder_browser_git": "Git",
   "folder_browser_open": "{name} を開く",
   "board_project_pick": "プロジェクト",
-  "board_epics_settled": "回答済みまたは中止：{count}"
+  "board_epics_settled": "回答済みまたは中止：{count}",
+  "board_epic_topic": "問いではなくテーマ",
+  "board_epic_topic_hint": "研究上の問いは、実験で決着できる一つのこと（例：「Z で X は Y より良いか？」）を問うものです。書き直す：orx epic edit {key} --question \"…？\""
 }

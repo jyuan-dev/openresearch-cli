@@ -2347,5 +2347,7 @@
   "folder_browser_git": "Git",
   "folder_browser_open": "Abrir {name}",
   "board_project_pick": "Proyecto",
-  "board_epics_settled": "Respondidas o descartadas: {count}"
+  "board_epics_settled": "Respondidas o descartadas: {count}",
+  "board_epic_topic": "Tema, no pregunta",
+  "board_epic_topic_hint": "Una pregunta de investigación pide una sola cosa que los experimentos puedan resolver, como «¿X supera a Y en Z?». Reformúlala con: orx epic edit {key} --question \"…?\""
 }

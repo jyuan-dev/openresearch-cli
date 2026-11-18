@@ -2347,5 +2347,7 @@
   "folder_browser_git": "Git",
   "folder_browser_open": "باز کردن {name}",
   "board_project_pick": "پروژه",
-  "board_epics_settled": "پاسخ‌داده یا کنارگذاشته: {count}"
+  "board_epics_settled": "پاسخ‌داده یا کنارگذاشته: {count}",
+  "board_epic_topic": "موضوع، نه پرسش",
+  "board_epic_topic_hint": "پرسش پژوهشی یک چیز را می‌پرسد که آزمایش‌ها بتوانند روشنش کنند، مثل «آیا X در Z از Y بهتر است؟». بازنویسی: orx epic edit {key} --question \"…?\""
 }

@@ -29,6 +29,9 @@ type Tab = "inbox" | "project" | "machines";
 const OpenChatContext = createContext<(projectId: string, sessionId: string) => void>(() => {});
 
 /** The research board: what waits for the user across projects, this project's tickets, and the machines they run on. */
+/** An epic asks one thing experiments can settle; imported ones are often topics instead. */
+const isQuestion = (text: string) => /[?\uff1f]\s*$/.test(text);
+
 export function BoardView({ projectId, onOpenChat }: { projectId: string; onOpenChat: (projectId: string, sessionId: string) => void }) {
   const [tab, setTab] = useState<Tab>("inbox");
   // Starts on the open project; any other project's board is one pick away.
@@ -541,8 +544,16 @@ function ProjectBoard({ projectId }: { projectId: string }) {
     <div key={epic.id} className={ROW_CLASS_NAME}>
       <span className="font-mono text-xs text-subtext pt-0.5">{ltr(epic.key)}</span>
       <div className="min-w-0">
-        <div className="text-sm font-medium text-text" dir="auto">{epic.title}</div>
+        <div className="flex flex-wrap items-center gap-x-2 text-sm font-medium text-text">
+          <span dir="auto">{epic.title}</span>
+          {!isQuestion(epic.question) && (
+            <Tooltip interactive content={m.board_epic_topic_hint({ key: ltr(epic.key) })}>
+              <span><Badge size="small" variant="warning">{m.board_epic_topic()}</Badge></span>
+            </Tooltip>
+          )}
+        </div>
         {epic.question !== epic.title && <div className="text-sm text-subtext" dir="auto">{epic.question}</div>}
+        {epic.conclusion && <div className="mt-1 whitespace-pre-line text-xs text-subtext" dir="auto">{epic.conclusion}</div>}
       </div>
       <span className="ms-auto shrink-0 text-xs text-subtext">
         {epic.status === "answered" ? m.board_epic_answered() : epic.criteriaVersion > 0 ? m.board_criteria_version({ version: fmtNumber(epic.criteriaVersion) }) : criteria ? m.board_criteria_waiting() : m.board_criteria_none()}
