@@ -93,7 +93,6 @@ import {
   ArrowUpRight,
   Bell,
   BookMarked,
-  SquareKanban,
   BookOpen,
   ChartSpline,
   Check,
@@ -8598,6 +8597,7 @@ export function ChatPanel({
   };
   const openRuntimeDetails = useCallback(() => onSelectMainView("openresearch"), [onSelectMainView]);
   const openSettings = useCallback(() => onSelectMainView("settings"), [onSelectMainView]);
+  const openBoard = useCallback(() => onSelectMainView("board"), [onSelectMainView]);
 
   /** How far above the rail's foot a section header pins: Working sits on Done's header. */
   const railStickyBottom = (section: "working" | "done") => {
@@ -8795,16 +8795,6 @@ export function ChatPanel({
         onPointerDown={onResizeRail}
       />}
       {railHeader}
-      <nav className="rail-nav flex flex-col gap-0.5 px-2 pt-1 shrink-0">
-        <button
-          className={`rail-nav-item flex items-center gap-2.5 py-1.5 px-2 text-sm text-text rounded-md text-start [&:hover:not(.active)]:bg-surface [&.active]:bg-panel [&.active]:font-medium ${mainView === "board" ? "active" : ""}`}
-          aria-current={mainView === "board" ? "page" : undefined}
-          onClick={() => onSelectMainView("board")}
-        >
-          <SquareKanban size={16} />
-          {m.board_nav()}
-        </button>
-      </nav>
       <div className="rail-section-head flex items-center justify-between shrink-0 pt-3.5 pe-2 pb-0 ps-3.25">
         <div className="rail-section-label p-0 text-sm font-medium text-subtext">
           {sidebarGrouping === "projects" ? m.projects_home_projects() : sidebarGrouping === "list" ? m.chat_all_sessions() : m.sidebar_inbox()}
@@ -8909,7 +8899,7 @@ export function ChatPanel({
         </div>
       )}
       </div>
-      <StatusStrip runtime={runtime} onDetails={openRuntimeDetails} settingsOpen={mainView !== "chat" && mainView !== "project"} onSettings={openSettings} />
+      <StatusStrip runtime={runtime} onDetails={openRuntimeDetails} settingsOpen={mainView !== "chat" && mainView !== "project" && mainView !== "board"} onSettings={openSettings} boardOpen={mainView === "board"} onBoard={openBoard} />
     </aside>
   );
 

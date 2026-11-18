@@ -3,7 +3,7 @@ import { useMutate } from "@clo/react-mutation";
 import { useQuery } from "@tanstack/react-query";
 import { Popover } from "@base-ui/react/popover";
 import { formatForDisplay } from "@tanstack/react-hotkeys";
-import { RotateCw, Settings } from "lucide-react";
+import { RotateCw, Settings, SquareKanban } from "lucide-react";
 import type { Harness, PlanUsage, RuntimeInfo, UsageReport } from "../api";
 import { timeAgo } from "../api";
 import { autoDir, fmtClock } from "../i18n";
@@ -22,7 +22,7 @@ import { useMachineState, WorkspaceConnection } from "./WorkspaceConnection";
 import { useLocale } from "../locale";
 
 /** The sidebar's footer: you and your agents' plans, then the machine and Settings. */
-export const StatusStrip = memo(function StatusStrip({ runtime, onDetails, settingsOpen, onSettings }: { runtime: RuntimeInfo; onDetails: () => void; settingsOpen: boolean; onSettings: () => void }) {
+export const StatusStrip = memo(function StatusStrip({ runtime, onDetails, settingsOpen, onSettings, boardOpen, onBoard }: { runtime: RuntimeInfo; onDetails: () => void; settingsOpen: boolean; onSettings: () => void; boardOpen?: boolean; onBoard?: () => void }) {
   useLocale();
   const { current, live } = useMachineState(runtime);
   const usage = useQuery(useWorkspace().queries.getUsageQuery());
@@ -46,6 +46,17 @@ export const StatusStrip = memo(function StatusStrip({ runtime, onDetails, setti
     </div>
     <div className="flex min-w-0 items-center gap-1">
       <WorkspaceConnection runtime={runtime} />
+      {onBoard && <Tooltip interactive content={m.board_nav()} className="shrink-0">
+        <IconButton
+          className="size-9"
+          active={boardOpen}
+          aria-label={m.board_nav()}
+          aria-current={boardOpen ? "page" : undefined}
+          onClick={onBoard}
+        >
+          <SquareKanban size={17} aria-hidden="true" />
+        </IconButton>
+      </Tooltip>}
       <Tooltip interactive content={`${m.settings_page_settings()} (${formatForDisplay(appHotkeys["settings.open"].hotkey ?? [])})`} className="shrink-0">
         <IconButton
           className="size-9"
