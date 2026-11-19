@@ -283,6 +283,11 @@ const composerTheme = EditorView.theme({
   ".cm-line": { padding: "0 var(--editor-pad-x)" },
   // One line however narrow the box, so an empty draft keeps the one-line height.
   ".cm-placeholder": { color: "var(--muted)", maxWidth: "100%", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
+  "&.cm-hint-empty .cm-content": { position: "relative" },
+  "&.cm-hint-empty .cm-content::before": {
+    content: "attr(aria-placeholder)", position: "absolute", top: "0", insetInline: "0", padding: "0 var(--editor-pad-x)",
+    color: "var(--muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", pointerEvents: "none",
+  },
   "&.cm-plain .cm-content": { fontFamily: "var(--mono)", fontSize: "0.875em" },
 });
 
@@ -294,6 +299,22 @@ const markdownSource = markdown({
   completeHTMLTags: false,
   extensions: { remove: ["HTMLBlock", "HTMLTag"] },
 });
+
+const android = typeof navigator !== "undefined" && /Android/i.test(navigator.userAgent);
+
+/**
+ * The hint shown while the draft is empty. CodeMirror draws it as an uneditable
+ * widget on the line, and on Android the first tap puts the caret beside that
+ * widget, so the keyboard composes the first word into it and the word is lost.
+ * There the hint is a CSS pseudo-element instead, which the keyboard can't reach.
+ */
+function hintExtension(text: string): Extension {
+  if (!android) return placeholderText(text);
+  return [
+    EditorView.contentAttributes.of({ "aria-placeholder": text }),
+    EditorView.editorAttributes.compute(["doc"], (state) => (state.doc.length === 0 ? { class: "cm-hint-empty" } : ({} as Record<string, string>))),
+  ];
+}
 
 /** Read-only refuses every change, including the editor's own commands that skip the `readOnly` facet. */
 function readOnlyExtension(readOnly: boolean): Extension {
@@ -454,7 +475,7 @@ export function ComposerEditor({
         chips(() => latest.current.chipSource),
         EditorView.lineWrapping,
         EditorView.perLineTextDirection.of(true),
-        compartments.placeholder.of(placeholderText(latest.current.placeholder)),
+        compartments.placeholder.of(hintExtension(latest.current.placeholder)),
         compartments.aria.of(EditorView.contentAttributes.of(ariaAttributes())),
         EditorView.updateListener.of((update) => {
           if (!update.docChanged && !update.selectionSet) return;
@@ -497,7 +518,7 @@ export function ComposerEditor({
   useEffect(() => {
     viewRef.current?.dispatch({
       effects: [
-        compartments.placeholder.reconfigure(placeholderText(placeholder)),
+        compartments.placeholder.reconfigure(hintExtension(placeholder)),
         compartments.aria.reconfigure(EditorView.contentAttributes.of(ariaAttributes())),
       ],
     });
