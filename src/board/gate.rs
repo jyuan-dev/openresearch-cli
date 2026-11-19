@@ -72,7 +72,7 @@ pub fn backend_verdict(
         if machine.backend != target {
             return Err(format!(
                 "{} holds its GPUs on {} ({}), so its runs launch there: {}. \
-                 If it has to run elsewhere (where its data is), ask the user to pin it: \
+                 If it has to run elsewhere (where its data is), pin it there first: \
                  `orx ticket pin {} --machine <name>`.",
                 ticket.key,
                 machine.name,

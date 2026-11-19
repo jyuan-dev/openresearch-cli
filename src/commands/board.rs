@@ -319,7 +319,7 @@ pub enum TicketCommand {
     Add(Box<TicketSpec>),
     /// Show a ticket and its activity.
     Show { ticket: String },
-    /// Run a ticket only on one machine, e.g. where its data is (user only).
+    /// Run a ticket only on one machine, e.g. where its data is.
     Pin {
         ticket: String,
         /// The machine's name, as `orx board machines` lists it.

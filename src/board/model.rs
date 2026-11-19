@@ -301,7 +301,7 @@ pub struct Ticket {
     pub harness: Option<String>,
     pub session_id: Option<String>,
     pub machine_id: Option<String>,
-    /// The machine the user pinned it to; the scheduler places it nowhere else.
+    /// The machine it was pinned to (by the user or an agent); the scheduler places it nowhere else.
     pub pinned_machine_id: Option<String>,
     pub repair_count: i64,
     pub outcome: Option<Outcome>,

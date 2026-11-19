@@ -927,16 +927,17 @@ impl Store {
             })
     }
 
-    /// Pins a ticket to one machine, or unpins it with `None` (user only). A
-    /// ticket that already holds GPUs moves its hold there at once, so its
-    /// chat can launch on the pinned machine without another dispatch.
+    /// Pins a ticket to one machine, or unpins it with `None`. Agents may do it
+    /// too, since they know where a run's data and caches are; a confidential
+    /// project still runs only on the user's own machines. A ticket that
+    /// already holds GPUs moves its hold there at once, so its chat can launch
+    /// on the pinned machine without another dispatch.
     pub fn pin_ticket(
         &self,
         id_or_key: &str,
         machine: Option<&str>,
         actor: &Actor,
     ) -> Result<Ticket> {
-        require_user(actor, "pin a ticket to a machine")?;
         let ticket = self.require_ticket(id_or_key)?;
         if matches!(
             ticket.status,
@@ -3416,10 +3417,14 @@ mod tests {
         assert_eq!(plan(&store)[0].machine_id.as_deref(), Some(ws.id.as_str()));
 
         let refused = store
-            .pin_ticket(&ticket.id, Some("Node50"), &agent())
+            .pin_ticket(&ticket.id, Some("rented"), &agent())
             .unwrap_err()
             .to_string();
-        assert!(refused.contains("Only the user"), "{refused}");
+        assert!(refused.contains("confidential"), "{refused}");
+        let by_agent = store
+            .pin_ticket(&ticket.id, Some("Node50"), &agent())
+            .unwrap();
+        assert_eq!(by_agent.pinned_machine_id.as_deref(), Some(node.id.as_str()));
         let refused = store
             .pin_ticket(&ticket.id, Some("rented"), &Actor::User)
             .unwrap_err()
