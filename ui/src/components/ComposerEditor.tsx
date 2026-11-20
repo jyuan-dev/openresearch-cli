@@ -7,6 +7,7 @@ import {
   Prec,
   StateEffect,
   StateField,
+  Transaction,
   type Extension,
   type Range,
 } from "@codemirror/state";
@@ -283,11 +284,6 @@ const composerTheme = EditorView.theme({
   ".cm-line": { padding: "0 var(--editor-pad-x)" },
   // One line however narrow the box, so an empty draft keeps the one-line height.
   ".cm-placeholder": { color: "var(--muted)", maxWidth: "100%", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
-  "&.cm-hint-empty .cm-content": { position: "relative" },
-  "&.cm-hint-empty .cm-content::before": {
-    content: "attr(aria-placeholder)", position: "absolute", top: "0", insetInline: "0", padding: "0 var(--editor-pad-x)",
-    color: "var(--muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", pointerEvents: "none",
-  },
   "&.cm-plain .cm-content": { fontFamily: "var(--mono)", fontSize: "0.875em" },
 });
 
@@ -299,22 +295,6 @@ const markdownSource = markdown({
   completeHTMLTags: false,
   extensions: { remove: ["HTMLBlock", "HTMLTag"] },
 });
-
-const android = typeof navigator !== "undefined" && /Android/i.test(navigator.userAgent);
-
-/**
- * The hint shown while the draft is empty. CodeMirror draws it as an uneditable
- * widget on the line, and on Android the first tap puts the caret beside that
- * widget, so the keyboard composes the first word into it and the word is lost.
- * There the hint is a CSS pseudo-element instead, which the keyboard can't reach.
- */
-function hintExtension(text: string): Extension {
-  if (!android) return placeholderText(text);
-  return [
-    EditorView.contentAttributes.of({ "aria-placeholder": text }),
-    EditorView.editorAttributes.compute(["doc"], (state) => (state.doc.length === 0 ? { class: "cm-hint-empty" } : ({} as Record<string, string>))),
-  ];
-}
 
 /** Read-only refuses every change, including the editor's own commands that skip the `readOnly` facet. */
 function readOnlyExtension(readOnly: boolean): Extension {
@@ -410,7 +390,7 @@ export function ComposerEditor({
   const viewRef = useRef<EditorView | null>(null);
   const latest = useRef({ onChange, onKeyDown, onSubmit, onFiles, onPaste, chipSource, plain, readOnly, placeholder, describedBy });
   latest.current = { onChange, onKeyDown, onSubmit, onFiles, onPaste, chipSource, plain, readOnly, placeholder, describedBy };
-  const [compartments] = useState(() => ({ mode: new Compartment(), readOnly: new Compartment(), placeholder: new Compartment(), aria: new Compartment() }));
+  const [compartments] = useState(() => ({ mode: new Compartment(), readOnly: new Compartment(), placeholder: new Compartment(), aria: new Compartment(), history: new Compartment() }));
   const [hovered, setHovered] = useState<HTMLElement | null>(null);
   const previewId = useId();
   /** A height the user dragged to; null keeps the natural height. */
@@ -430,7 +410,7 @@ export function ComposerEditor({
       doc,
       selection: { anchor: doc.length },
       extensions: [
-        history(),
+        compartments.history.of(history()),
         Prec.highest(EditorView.domEventHandlers({
           keydown(event) {
             if (isComposing(event)) return false;
@@ -475,7 +455,7 @@ export function ComposerEditor({
         chips(() => latest.current.chipSource),
         EditorView.lineWrapping,
         EditorView.perLineTextDirection.of(true),
-        compartments.placeholder.of(hintExtension(latest.current.placeholder)),
+        compartments.placeholder.of(placeholderText(latest.current.placeholder)),
         compartments.aria.of(EditorView.contentAttributes.of(ariaAttributes())),
         EditorView.updateListener.of((update) => {
           if (!update.docChanged && !update.selectionSet) return;
@@ -503,7 +483,17 @@ export function ComposerEditor({
     const view = viewRef.current;
     if (!view || (view.state.doc.toString() === value && shownDraftKey.current === draftKey)) return;
     shownDraftKey.current = draftKey;
-    view.setState(createState(value));
+    // An edit, not `setState`: on Android Chrome the keyboard reads the text
+    // through an EditContext that `setState` leaves holding the old draft, so
+    // the first word typed into a sent or switched draft was lost. Dropping and
+    // re-adding the history extension starts this draft's undo history afresh.
+    view.dispatch({
+      changes: { from: 0, to: view.state.doc.length, insert: value },
+      selection: { anchor: value.length },
+      effects: compartments.history.reconfigure([]),
+      annotations: Transaction.addToHistory.of(false),
+    });
+    view.dispatch({ effects: compartments.history.reconfigure(history()) });
     latest.current.onChange(value, value.length, false);
   }, [value, draftKey]);
 
@@ -518,7 +508,7 @@ export function ComposerEditor({
   useEffect(() => {
     viewRef.current?.dispatch({
       effects: [
-        compartments.placeholder.reconfigure(hintExtension(placeholder)),
+        compartments.placeholder.reconfigure(placeholderText(placeholder)),
         compartments.aria.reconfigure(EditorView.contentAttributes.of(ariaAttributes())),
       ],
     });
